@@ -24,6 +24,7 @@ from ksma.assessment.interface import router as assessment_router
 from ksma.batch.interface import router as batch_router
 from ksma.finance.interface import router as finance_router
 from ksma.identity.interface import router as identity_router
+from ksma.operations.interface import router as operations_router
 from ksma.participant.interface import router as participant_router
 from ksma.portal.interface import router as portal_router
 from ksma.program.interface import router as program_router
@@ -84,6 +85,7 @@ def create_app() -> FastAPI:
     app.include_router(finance_router)
     app.include_router(assessment_router)
     app.include_router(portal_router)
+    app.include_router(operations_router)
 
     # --- Wire placeholder deps in every router that used NotImplementedError --
     #
@@ -100,6 +102,7 @@ def create_app() -> FastAPI:
         "ksma.session.interface",
         "ksma.finance.interface",
         "ksma.assessment.interface",
+        "ksma.operations.interface",
     ]:
         mod = __import__(router_module, fromlist=[""])
         if hasattr(mod, "require_tenant_context"):
