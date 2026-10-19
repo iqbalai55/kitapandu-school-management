@@ -59,10 +59,7 @@ class Money:
 
     @classmethod
     def from_decimal(cls, value: Decimal | int | str, currency: Currency = Currency.IDR) -> "Money":
-        if isinstance(value, Decimal):
-            scaled = value.scaleb(_SCALE).quantize(_QUANTUM, rounding=ROUND_HALF_EVEN)
-        else:
-            scaled = Decimal(str(value))
+        scaled = Decimal(str(value)).scaleb(_SCALE).quantize(_QUANTUM, rounding=ROUND_HALF_EVEN)
         return cls(amount=int(scaled), currency=currency)
 
     def to_decimal(self) -> Decimal:
