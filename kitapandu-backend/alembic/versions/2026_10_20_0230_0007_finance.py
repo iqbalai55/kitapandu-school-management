@@ -174,7 +174,8 @@ def upgrade() -> None:
             allocated_by        text NOT NULL,
             idempotency_id      uuid,
             reversed_at         timestamptz,
-            reversal_reason     text
+            reversal_reason     text,
+            updated_at          timestamptz NOT NULL DEFAULT now()
         )
         """
     )

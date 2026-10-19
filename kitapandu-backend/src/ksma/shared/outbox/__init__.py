@@ -66,10 +66,11 @@ async def enqueue(
         text(
             f"""
             INSERT INTO {OUTBOX_TABLE}
-              (event_id, event_type, payload, aggregate_ref,
+              (event_id, event_type, payload, aggregate_ref, tenant_id,
                occurred_at, dispatch_state, correlation_id)
             VALUES
               (:event_id, :event_type, CAST(:payload AS JSONB), :aggregate_ref,
+               :tenant_id,
                :occurred_at, 'pending', CAST(:correlation_id AS UUID))
             """
         ),
@@ -78,6 +79,7 @@ async def enqueue(
             "event_type": event.event_type,
             "payload": _json_dumps(payload),
             "aggregate_ref": aggregate_ref,
+            "tenant_id": str(event.tenant_id) if event.tenant_id else None,
             "occurred_at": event.occurred_at,
             "correlation_id": str(event.correlation_id) if event.correlation_id else None,
         },

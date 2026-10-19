@@ -317,6 +317,7 @@ def upgrade() -> None:
         CREATE TABLE outbox_messages (
             id                  uuid PRIMARY KEY DEFAULT ksma_uuid(),
             tenant_id           uuid NOT NULL REFERENCES tenant(id) ON DELETE RESTRICT,
+            event_id            uuid NOT NULL,
             event_type          text NOT NULL,
             payload             jsonb NOT NULL,
             aggregate_ref       text,
