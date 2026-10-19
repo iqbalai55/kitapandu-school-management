@@ -156,7 +156,7 @@ class IdempotencyKeyConflictError(DomainError):
     """Same key, different request body (R21)."""
 
     code = "IDEMPOTENCY_KEY_CONFLICT"
-    http_status = 409
+    http_status = 422  # unprocessable entity: client used the key wrong
 
 
 # --- Operational (mapped to 500 / 503) ---
@@ -188,7 +188,7 @@ class ErrorEnvelope:
     details: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return DomainError.__dataclass_fields__ and {
+        return {
             "code": self.code,
             "message": self.message,
             "correlation_id": str(self.correlation_id),
