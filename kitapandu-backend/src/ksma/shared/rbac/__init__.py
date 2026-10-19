@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import enum
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Protocol
 from uuid import UUID
 
 
@@ -539,5 +539,6 @@ def evaluate(
 
 
 # Forward reference so we don't import tenancy here (avoid circular import).
-class TenantContextLike(protocol := None):  # type: ignore[valid-type]
+# Marker Protocol; the actual ``TenantContext`` lives in ``ksma.shared.tenancy``.
+class TenantContextLike(Protocol):
     pass
