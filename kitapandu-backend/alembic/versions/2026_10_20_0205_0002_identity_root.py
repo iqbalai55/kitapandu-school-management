@@ -223,7 +223,7 @@ def upgrade() -> None:
             valid_until         timestamptz,
             status              text NOT NULL CHECK (status IN ('pending','active','expired','revoked')),
             policy_id           uuid NOT NULL REFERENCES policy_version(id),
-            authorization       jsonb NOT NULL,
+            "authorization"     jsonb NOT NULL,
             revocation          jsonb,
             created_at          timestamptz NOT NULL DEFAULT now(),
             created_by          text NOT NULL,

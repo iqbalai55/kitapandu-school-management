@@ -37,10 +37,11 @@ depends_on: Union[str, Sequence[str], None] = None
 # ``tenant`` (it's the isolation root) or the G-scope tables (``account``,
 # ``service_principal``) which are not tenant-scoped.
 RLS_TABLES: tuple[str, ...] = (
+    # Note: G-scope tables (account, service_principal, recovery_token) are
+    # intentionally NOT included — they are not tenant-scoped.
     "education_unit",
     "membership",
     "refresh_token",
-    "recovery_token",
     "policy_version",
     "access_assignment",
     "support_grant",
@@ -89,7 +90,7 @@ RLS_TABLES: tuple[str, ...] = (
     "metric_definition",
     "operational_run",
     "background_job",
-    "processed_event",
+    "processed_events",
     "idempotency_record",
 )
 
