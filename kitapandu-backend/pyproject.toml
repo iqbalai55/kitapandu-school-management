@@ -1,0 +1,77 @@
+[project]
+name = "kitapandu-backend"
+version = "0.1.0"
+description = "KitaPandu School Management (KSMA) — FastAPI backend pilot"
+readme = "README.md"
+requires-python = ">=3.12"
+authors = [{ name = "KitaPandu" }]
+license = { text = "Proprietary" }
+
+dependencies = [
+  "fastapi>=0.115,<1",
+  "uvicorn[standard]>=0.32,<1",
+  "pydantic>=2.9,<3",
+  "pydantic-settings>=2.6,<3",
+  "SQLAlchemy[asyncio]>=2.0.36,<2.1",
+  "asyncpg>=0.30,<1",
+  "alembic>=1.14,<2",
+  "psycopg[binary]>=3.2,<4",
+  "argon2-cffi>=25.1,<26",
+  "PyJWT>=2.10,<3",
+  "minio>=7.2,<8",
+  "python-multipart>=0.0.18",
+  "orjson>=3.10",
+  "structlog>=24.4",
+  "httpx>=0.28",
+  "email-validator>=2.2",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3",
+  "pytest-asyncio>=0.24",
+  "pytest-cov>=6",
+  "pytest-xdist>=3.6",
+  "factory-boy>=3.3",
+  "freezegun>=1.5",
+  "ruff>=0.7",
+  "mypy>=1.13",
+  "types-PyYAML",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ksma"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = ["-ra", "--strict-markers", "--tb=short"]
+markers = [
+  "scenario: marks a validation scenario from the data dictionary (V01..V24)",
+]
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM", "RUF", "ASYNC", "S", "PL"]
+ignore = ["S101", "PLR0913"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S", "PLR2004"]
+"alembic/**" = ["E501"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+plugins = ["pydantic.mypy"]
+
+[tool.coverage.run]
+branch = true
+source = ["src/ksma"]
+omit = ["*/tests/*", "*/alembic/*"]

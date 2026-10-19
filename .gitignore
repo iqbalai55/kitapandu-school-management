@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Editors
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# KSMA-specific
+.tmp-research/
+docs/_text/
+*.pyc
+
+# Local secrets / env
+.env
+.env.local
+*.local
+
+# Coverage / test artefacts
+.coverage
+htmlcov/
+coverage.xml
