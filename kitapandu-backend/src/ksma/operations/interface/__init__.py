@@ -51,13 +51,10 @@ from ksma.operations.domain import (
 )
 from ksma.shared.persistence import session_scope
 from ksma.shared.tenancy import TenantContext
+from ksma.shared.auth.dependencies import tenant_context_dep as require_tenant_context
 
 router = APIRouter(prefix="/api/v1", tags=["operations"])
 
-
-def require_tenant_context() -> TenantContext:  # pragma: no cover
-    """Placeholder rebound by ``ksma.main.create_app`` to ``tenant_context_dep``."""
-    raise NotImplementedError
 
 
 # --- Schemas ----------------------------------------------------------------

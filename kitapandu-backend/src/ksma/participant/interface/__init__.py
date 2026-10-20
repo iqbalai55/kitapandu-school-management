@@ -39,6 +39,7 @@ from ksma.shared.errors import ValidationError
 from ksma.shared.persistence import session_scope
 from ksma.shared.rbac import ActionCode, Target, evaluate
 from ksma.shared.tenancy import TenantContext
+from ksma.shared.auth.dependencies import tenant_context_dep as require_tenant_context
 
 router = APIRouter(prefix="/api/v1", tags=["participant"])
 
@@ -160,10 +161,6 @@ class PortalParticipantOut(BaseModel):
 
 # --- Tenant context dependency (filled in by main.py at startup) ------------
 
-
-def require_tenant_context() -> TenantContext:  # pragma: no cover
-    """Provided by ``main.install_routes`` to inject the per-request context."""
-    raise NotImplementedError
 
 
 def require_action(action: ActionCode, target: Target = Target()):  # pragma: no cover

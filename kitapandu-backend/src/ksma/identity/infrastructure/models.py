@@ -19,6 +19,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, TSTZRANGE, UUID as PgUUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -30,7 +31,8 @@ class Base(DeclarativeBase):
 
 class TenantRow(Base):
     __tablename__ = "tenant"
-    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True)
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True,
+        server_default=text("ksma_uuid()"))
     display_name: Mapped[str] = mapped_column(Text, nullable=False)
     service_status: Mapped[str] = mapped_column(String(32), nullable=False)
     default_timezone: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -44,7 +46,8 @@ class TenantRow(Base):
 
 class EducationUnitRow(Base):
     __tablename__ = "education_unit"
-    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True)
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True,
+        server_default=text("ksma_uuid()"))
     tenant_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("tenant.id"), nullable=False)
     unit_code: Mapped[str] = mapped_column(String(64), nullable=False)
     name: Mapped[str] = mapped_column(Text, nullable=False)
@@ -81,7 +84,8 @@ class AccountRow(Base):
 
 class MembershipRow(Base):
     __tablename__ = "membership"
-    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True)
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True,
+        server_default=text("ksma_uuid()"))
     tenant_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("tenant.id"), nullable=False)
     account_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("account.id"), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -99,7 +103,10 @@ class MembershipRow(Base):
 
 class RefreshTokenRow(Base):
     __tablename__ = "refresh_token"
-    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True)
+    id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), primary_key=True,
+        server_default=text("ksma_uuid()"),
+    )
     tenant_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("tenant.id"), nullable=False)
     account_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("account.id"), nullable=False)
     membership_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("membership.id"), nullable=False)
@@ -113,7 +120,8 @@ class RefreshTokenRow(Base):
 
 class RecoveryTokenRow(Base):
     __tablename__ = "recovery_token"
-    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True)
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True,
+        server_default=text("ksma_uuid()"))
     account_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("account.id"), nullable=False)
     token_hash: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
     purpose: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -125,7 +133,8 @@ class RecoveryTokenRow(Base):
 
 class ServicePrincipalRow(Base):
     __tablename__ = "service_principal"
-    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True)
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True,
+        server_default=text("ksma_uuid()"))
     principal_code: Mapped[str] = mapped_column(String(120), nullable=False, unique=True)
     purpose: Mapped[str] = mapped_column(Text, nullable=False)
     environment: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -137,7 +146,8 @@ class ServicePrincipalRow(Base):
 
 class PolicyVersionRow(Base):
     __tablename__ = "policy_version"
-    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True)
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True,
+        server_default=text("ksma_uuid()"))
     tenant_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("tenant.id"), nullable=False)
     policy_domain: Mapped[str] = mapped_column(String(64), nullable=False)
     unit_scope_id: Mapped[UUID | None] = mapped_column(PgUUID(as_uuid=True), nullable=True)
@@ -157,7 +167,8 @@ class PolicyVersionRow(Base):
 
 class AccessAssignmentRow(Base):
     __tablename__ = "access_assignment"
-    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True)
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True,
+        server_default=text("ksma_uuid()"))
     tenant_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("tenant.id"), nullable=False)
     membership_id: Mapped[UUID | None] = mapped_column(PgUUID(as_uuid=True), ForeignKey("membership.id"), nullable=True)
     service_principal_id: Mapped[UUID | None] = mapped_column(PgUUID(as_uuid=True), ForeignKey("service_principal.id"), nullable=True)
@@ -178,7 +189,8 @@ class AccessAssignmentRow(Base):
 
 class SupportGrantRow(Base):
     __tablename__ = "support_grant"
-    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True)
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True,
+        server_default=text("ksma_uuid()"))
     tenant_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("tenant.id"), nullable=False)
     operator_account_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("account.id"), nullable=False)
     ticket_ref: Mapped[str] = mapped_column(String(120), nullable=False)
@@ -193,7 +205,8 @@ class SupportGrantRow(Base):
 
 class AuditRecordRow(Base):
     __tablename__ = "audit_record"
-    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True)
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True,
+        server_default=text("ksma_uuid()"))
     tenant_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), nullable=False)
     actor: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     action_id: Mapped[str] = mapped_column(Text, nullable=False)

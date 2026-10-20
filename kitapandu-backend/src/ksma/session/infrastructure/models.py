@@ -6,6 +6,7 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy import (
+    text,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -24,7 +25,8 @@ class Base(DeclarativeBase):
 
 class SessionRow(Base):
     __tablename__ = "session"
-    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True)
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True,
+        server_default=text("ksma_uuid()"))
     tenant_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("tenant.id"), nullable=False)
     unit_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("education_unit.id"), nullable=False)
     batch_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("batch.id"), nullable=False)
@@ -46,7 +48,8 @@ class SessionRow(Base):
 
 class SessionRevisionRow(Base):
     __tablename__ = "session_revision"
-    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True)
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True,
+        server_default=text("ksma_uuid()"))
     tenant_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("tenant.id"), nullable=False)
     session_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("session.id"), nullable=False)
     revision_no: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -70,7 +73,8 @@ class SessionRevisionRow(Base):
 
 class AttendanceRow(Base):
     __tablename__ = "attendance"
-    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True)
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True,
+        server_default=text("ksma_uuid()"))
     tenant_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("tenant.id"), nullable=False)
     session_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("session.id"), nullable=False)
     enrollment_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("enrollment.id"), nullable=False)
@@ -97,7 +101,8 @@ class AttendanceRow(Base):
 
 class TeachingJournalRow(Base):
     __tablename__ = "teaching_journal"
-    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True)
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True,
+        server_default=text("ksma_uuid()"))
     tenant_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("tenant.id"), nullable=False)
     session_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("session.id"), nullable=False)
     actual_instructor_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("membership.id"), nullable=False)
@@ -116,7 +121,8 @@ class TeachingJournalRow(Base):
 
 class SessionCompletionRow(Base):
     __tablename__ = "session_completion"
-    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True)
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True,
+        server_default=text("ksma_uuid()"))
     tenant_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("tenant.id"), nullable=False)
     session_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("session.id"), nullable=False)
     completion_no: Mapped[int] = mapped_column(Integer, nullable=False)

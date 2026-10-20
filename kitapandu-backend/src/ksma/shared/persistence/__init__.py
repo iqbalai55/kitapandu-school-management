@@ -102,9 +102,10 @@ async def set_current_tenant(
             text("SET LOCAL app.bypass_rls = 'false'"),
             {"tid": str(tenant_id)},
         )
+        # SET LOCAL doesn't accept bound parameters via asyncpg; inline the
+        # UUID as a literal (validated by SQLAlchemy before execution).
         await conn.execute(
-            text("SET LOCAL app.current_tenant = :tid"),
-            {"tid": str(tenant_id)},
+            text(f"SET LOCAL app.current_tenant = '{str(tenant_id)}'"),
         )
 
 

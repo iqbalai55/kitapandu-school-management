@@ -15,6 +15,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, TSTZRANGE, UUID as PgUUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -26,7 +27,8 @@ class Base(DeclarativeBase):
 
 class BatchRow(Base):
     __tablename__ = "batch"
-    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True)
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True,
+        server_default=text("ksma_uuid()"))
     tenant_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("tenant.id"), nullable=False)
     unit_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("education_unit.id"), nullable=False)
     batch_code: Mapped[str] = mapped_column(String(40), nullable=False)
@@ -50,7 +52,8 @@ class BatchRow(Base):
 
 class ApplicationRow(Base):
     __tablename__ = "application"
-    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True)
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True,
+        server_default=text("ksma_uuid()"))
     tenant_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("tenant.id"), nullable=False)
     unit_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("education_unit.id"), nullable=False)
     participant_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("participant.id"), nullable=False)
@@ -68,7 +71,8 @@ class ApplicationRow(Base):
 
 class EnrollmentRow(Base):
     __tablename__ = "enrollment"
-    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True)
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True,
+        server_default=text("ksma_uuid()"))
     tenant_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("tenant.id"), nullable=False)
     unit_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("education_unit.id"), nullable=False)
     participant_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("participant.id"), nullable=False)
@@ -85,7 +89,8 @@ class EnrollmentRow(Base):
 
 class EnrollmentChangeRow(Base):
     __tablename__ = "enrollment_change"
-    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True)
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True,
+        server_default=text("ksma_uuid()"))
     tenant_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("tenant.id"), nullable=False)
     source_enrollment_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("enrollment.id"), nullable=False)
     target_enrollment_id: Mapped[UUID | None] = mapped_column(PgUUID(as_uuid=True), ForeignKey("enrollment.id"), nullable=True)
@@ -101,7 +106,8 @@ class EnrollmentChangeRow(Base):
 
 class TeachingAssignmentRow(Base):
     __tablename__ = "teaching_assignment"
-    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True)
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True,
+        server_default=text("ksma_uuid()"))
     tenant_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("tenant.id"), nullable=False)
     unit_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("education_unit.id"), nullable=False)
     membership_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("membership.id"), nullable=False)
