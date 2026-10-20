@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from pydantic import Field, PostgresDsn, SecretStr
+from pydantic import PostgresDsn, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -50,6 +50,16 @@ class Settings(BaseSettings):
 
     # --- Time (per docs: Asia/Jakarta proposed for pilot) ---
     default_timezone: str = "Asia/Jakarta"
+
+    # --- Observability (P4.1) — OpenTelemetry SDK ---
+    # Disabled by default; when off, the observability module is a no-op
+    # (no SDK init, no span creation, no middleware side effects beyond
+    # correlation-id echo). Set KITAPANDU_OTEL_ENABLED=true + provide
+    # KITAPANDU_OTEL_EXPORTER_OTLP_ENDPOINT to turn on OTLP export.
+    otel_enabled: bool = False
+    otel_service_name: str = "ksma-api"
+    otel_otlp_endpoint: str = ""  # e.g. "http://otel-collector:4317"
+    otel_sample_ratio: float = 1.0
 
 
 @lru_cache(maxsize=1)
