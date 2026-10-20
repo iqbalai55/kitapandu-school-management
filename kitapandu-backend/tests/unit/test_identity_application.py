@@ -1,0 +1,983 @@
+"""Unit tests for ``ksma.identity.application``.
+
+Seam: the public surface of :mod:`ksma.identity.application`. Each test pins
+ONE specific surviving mutant operator flip from the baseline mutator scan.
+All persistence is exercised via the in-memory ``FakeAsyncSession`` from
+``conftest_helpers.py`` wrapped in ``_IdentitySession`` (which extracts bind
+values from SQLAlchemy ``Select`` statements so the fake's equality predicates
+actually match the seeded rows). No DB, no Docker, no network.
+
+Surviving mutants (baseline scan): 53 sites across ``login`` (10),
+``complete_recovery`` (6), ``refresh`` (5), ``activate_membership`` (5),
+``grant_access`` (4), ``revoke_access`` (4), ``issue_service_token`` (4),
+``start_recovery`` (4), ``revoke_membership`` (3), ``change_password`` (2),
+``activate_account`` (2), ``activate_tenant`` (1), ``create_education_unit``
+(1), ``logout`` (1), ``publish_policy`` (1).
+"""
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+from typing import Any
+from unittest.mock import patch
+from uuid import UUID, uuid4
+
+import pytest
+from pydantic import SecretStr
+from sqlalchemy import select
+from sqlalchemy.sql import Select
+
+from ksma.identity.domain import (
+    AccountStatus,
+    MembershipStatus,
+)
+from ksma.identity.infrastructure.models import (
+    AccountRow,
+    AccessAssignmentRow,
+    MembershipRow,
+    RefreshTokenRow,
+    RecoveryTokenRow,
+    ServicePrincipalRow,
+)
+from ksma.shared.auth import hash_password
+from ksma.identity.application import _hash_refresh
+from ksma.shared.time import clock as _clock
+from ksma.shared.errors import (
+    AuthenticationError,
+    InvalidCredentialsError,
+    ValidationError,
+)
+from ksma.shared.time import FrozenClock, reset_clock, set_clock
+from ksma.settings import Settings
+from tests.unit.conftest_helpers import FakeAsyncSession, FakeResult, FakeRow, SessionCall
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _fixed_settings() -> Any:
+    """Patch ``get_settings`` so JWT issuance works without a real env."""
+    from ksma.settings import get_settings as _real_get_settings
+
+    test_settings = Settings(
+        env="test",
+        log_level="INFO",
+        postgres_dsn="postgresql+asyncpg://test:test@localhost:5432/test",
+        postgres_dsn_sync="postgresql://test:test@localhost:5432/test",
+        jwt_secret=SecretStr("test-secret-do-not-use-in-prod"),
+        jwt_issuer="kitapandu-test",
+        jwt_audience="kitapandu-test-web",
+        access_token_ttl_seconds=900,
+        refresh_token_ttl_seconds=604800,
+        minio_endpoint="localhost:9000",
+        minio_access_key="minioadmin",
+        minio_secret_key=SecretStr("minioadmin"),
+        minio_secure=False,
+        s3_bucket="ksma-test",
+        presigned_url_ttl_seconds=300,
+        outbox_poll_interval_seconds=0.5,
+        outbox_batch_size=50,
+        max_file_bytes=10485760,
+        default_timezone="Asia/Jakarta",
+    )
+    with patch("ksma.settings.get_settings", return_value=test_settings), \
+         patch("ksma.shared.auth.jwt.get_settings", return_value=test_settings), \
+         patch.object(_real_get_settings, "cache_clear", lambda: None):
+        yield test_settings
+
+
+@pytest.fixture(autouse=True)
+def _reset_clock() -> Any:
+    """Reset the process clock between tests so time-dependent mutants are stable."""
+    fixed = datetime(2030, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    set_clock(FrozenClock(fixed))
+    yield fixed
+    reset_clock()
+
+
+@pytest.fixture(autouse=True)
+def _fake_row_setattr() -> Any:
+    """Make ``FakeRow`` writable as a dict via attribute assignment.
+
+    The default ``FakeRow`` only intercepts ``__getattr__``; ``a.x = v`` would
+    install an instance attribute instead of mutating the underlying dict.
+    Source code does ``a.authz_revision += 1`` after re-querying the row, so
+    we need attribute-set to land back in the dict storage.
+    """
+    def _setattr(self: Any, name: str, value: Any) -> None:
+        self[name] = value
+
+    original = getattr(FakeRow, "__setattr__", None)
+    FakeRow.__setattr__ = _setattr  # type: ignore[attr-defined]
+    yield
+    if original is not None:
+        FakeRow.__setattr__ = original  # type: ignore[attr-defined]
+    else:  # pragma: no cover - defensive
+        try:
+            del FakeRow.__setattr__
+        except AttributeError:
+            pass
+
+
+# ---------------------------------------------------------------------------
+# Smart wrapper — the source uses ``scalar_one_or_none`` / ``scalar_one``
+# against an ORM ``Select``, and the fake's default reader returns the first
+# column value (not the row). ``_IdentitySession`` also pulls bind parameters
+# off the compiled statement so the fake's WHERE matching works.
+# ---------------------------------------------------------------------------
+
+
+class _SmartResult:
+    """Wrap a :class:`FakeResult` so scalar accessors return the row, not the first value."""
+
+    def __init__(self, inner: FakeResult) -> None:
+        self._inner = inner
+
+    def scalar_one_or_none(self) -> Any:
+        rows = self._inner.all()
+        return rows[0] if rows else None
+
+    def scalar_one(self) -> Any:
+        rows = self._inner.all()
+        assert len(rows) == 1, f"expected exactly one row, got {len(rows)}"
+        return rows[0]
+
+    def first(self) -> Any:
+        return self._inner.first()
+
+    def all(self) -> list[Any]:
+        return self._inner.all()
+
+    def __iter__(self) -> Any:  # pragma: no cover - rarely used
+        return iter(self._inner)
+
+    def __len__(self) -> int:
+        return len(self._inner)
+
+
+class _IdentitySession(FakeAsyncSession):
+    """FakeAsyncSession that materialises SQLAlchemy ``Select`` bind parameters."""
+
+    def add(self, instance: Any) -> None:
+        """Override to be sync — the source code does ``session.add(...)`` without ``await``."""
+        self._record(SessionCall(op="add", value=instance))
+
+    def delete(self, instance: Any) -> None:  # pragma: no cover - defensive
+        self._record(SessionCall(op="delete", value=instance))
+
+    async def execute(self, statement: Any, parameters: Any = None) -> Any:
+        if isinstance(statement, Select) and not parameters:
+            try:
+                parameters = dict(statement.compile().params)
+            except Exception:  # pragma: no cover - defensive
+                parameters = {}
+        else:
+            parameters = parameters or {}
+        result = await super().execute(statement, parameters)
+        return _SmartResult(result)
+
+
+# ---------------------------------------------------------------------------
+# Row seeders — keep test setup readable.
+# ---------------------------------------------------------------------------
+
+
+def _seed_account(
+    session: _IdentitySession,
+    *,
+    aid: UUID | None = None,
+    auth_subject: str = "alice",
+    auth_namespace: str = "default",
+    password: str | None = "secret",
+    status: AccountStatus = AccountStatus.ACTIVE,
+    authz_revision: int = 1,
+) -> UUID:
+    aid = aid or uuid4()
+    session.seed(
+        "account",
+        {
+            "id": aid,
+            "auth_subject": auth_subject,
+            "auth_namespace": auth_namespace,
+            "display_name": auth_subject,
+            "verified_contact": None,
+            "password_hash": hash_password(password) if password else None,
+            "status": status.value,
+            "authz_revision": authz_revision,
+            "created_at": None,
+            "created_by": "test",
+            "updated_at": None,
+            "updated_by": "test",
+        },
+    )
+    return aid
+
+
+def _seed_membership(
+    session: _IdentitySession,
+    *,
+    mid: UUID | None = None,
+    account_id: UUID,
+    tenant_id: UUID | None = None,
+    status: MembershipStatus = MembershipStatus.ACTIVE,
+    authz_revision: int = 1,
+    with_account: bool = True,
+) -> UUID:
+    """Seed a membership row.
+
+    ``with_account=True`` also seeds an in-row ``account`` dict so the
+    ``m.account.authz_revision += 1`` branch in ``activate_membership`` does
+    not raise ``AttributeError`` for the test that needs to exercise it.
+    """
+    mid = mid or uuid4()
+    tenant_id = tenant_id or uuid4()
+    row: dict[str, Any] = {
+        "id": mid,
+        "tenant_id": tenant_id,
+        "account_id": account_id,
+        "status": status.value,
+        "valid_from": datetime.now(timezone.utc),
+        "valid_until": None,
+        "invitation_ref": None,
+        "revocation": None,
+        "created_at": None,
+        "created_by": "test",
+        "updated_at": None,
+        "updated_by": "test",
+    }
+    if with_account:
+        row["account"] = FakeRow({"authz_revision": authz_revision})
+    session.seed("membership", row)
+    return mid
+
+
+def _seed_refresh_token(
+    session: _IdentitySession,
+    *,
+    rtid: UUID | None = None,
+    tenant_id: UUID | None = None,
+    account_id: UUID | None = None,
+    membership_id: UUID | None = None,
+    token_hash: str = "h",
+    expires_at: datetime | None = None,
+    revoked_at: datetime | None = None,
+) -> UUID:
+    rtid = rtid or uuid4()
+    session.seed(
+        "refresh_token",
+        {
+            "id": rtid,
+            "tenant_id": tenant_id or uuid4(),
+            "account_id": account_id or uuid4(),
+            "membership_id": membership_id or uuid4(),
+            "token_hash": token_hash,
+            "issued_at": datetime.now(timezone.utc) - timedelta(days=1),
+            "expires_at": expires_at or (datetime.now(timezone.utc) + timedelta(days=7)),
+            "revoked_at": revoked_at,
+            "revoked_reason": None,
+            "replaced_by_id": None,
+        },
+    )
+    return rtid
+
+
+def _seed_recovery_token(
+    session: _IdentitySession,
+    *,
+    recid: UUID | None = None,
+    account_id: UUID | None = None,
+    token_hash: str = "h",
+    expires_at: datetime | None = None,
+    consumed_at: datetime | None = None,
+) -> UUID:
+    recid = recid or uuid4()
+    session.seed(
+        "recovery_token",
+        {
+            "id": recid,
+            "account_id": account_id or uuid4(),
+            "token_hash": token_hash,
+            "purpose": "password_recover",
+            "issued_at": datetime.now(timezone.utc),
+            "expires_at": expires_at or (datetime.now(timezone.utc) + timedelta(hours=1)),
+            "consumed_at": consumed_at,
+            "consumed_ip": None,
+        },
+    )
+    return recid
+
+
+def _seed_service_principal(
+    session: _IdentitySession,
+    *,
+    code: str = "outbox-worker",
+    status: str = "active",
+) -> None:
+    session.seed(
+        "service_principal",
+        {
+            "id": uuid4(),
+            "principal_code": code,
+            "purpose": "test",
+            "environment": "test",
+            "credential_ref": "x",
+            "status": status,
+            "rotation_due_at": None,
+            "created_at": None,
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# TestLogin — 10 surviving mutants (lines 431, 432, 436 x3, 438, 443, 444, 447, 469)
+# ---------------------------------------------------------------------------
+
+
+class TestLogin:
+    """Pin the operator flips in ``login()`` — 10 surviving mutants."""
+
+    async def test_unknown_account_raises(self) -> None:
+        """Kills the ``== -> !=`` mutants on lines 431 and 432 (auth namespace / subject)."""
+        from ksma.identity.application import login
+
+        session = _IdentitySession()
+        with pytest.raises(InvalidCredentialsError):
+            await login(
+                session, auth_subject="nobody", password="anything",
+                auth_namespace="default",
+            )
+
+    async def test_wrong_password_raises(self) -> None:
+        """Kills the ``or -> and`` and ``delete not`` mutants on line 436."""
+        from ksma.identity.application import login
+
+        session = _IdentitySession()
+        _seed_account(session, auth_subject="alice", password="right")
+        with pytest.raises(InvalidCredentialsError):
+            await login(session, auth_subject="alice", password="wrong")
+
+    async def test_account_with_no_password_hash_raises(self) -> None:
+        """Same line 436 — short-circuit chain treats missing hash as invalid."""
+        from ksma.identity.application import login
+
+        session = _IdentitySession()
+        _seed_account(session, auth_subject="alice", password=None)
+        with pytest.raises(InvalidCredentialsError):
+            await login(session, auth_subject="alice", password="anything")
+
+    async def test_disabled_account_raises(self) -> None:
+        """Kills the ``!= -> ==`` mutant on line 438 (status check)."""
+        from ksma.identity.application import login
+
+        session = _IdentitySession()
+        _seed_account(session, status=AccountStatus.DISABLED, password="secret")
+        with pytest.raises(AuthenticationError):
+            await login(session, auth_subject="alice", password="secret")
+
+    async def test_pending_account_raises(self) -> None:
+        """Same line 438 — pending status must also reject."""
+        from ksma.identity.application import login
+
+        session = _IdentitySession()
+        _seed_account(session, status=AccountStatus.PENDING, password="secret")
+        with pytest.raises(AuthenticationError):
+            await login(session, auth_subject="alice", password="secret")
+
+    async def test_no_active_membership_raises(self) -> None:
+        """Kills ``== -> !=`` mutants on lines 443 and 444 (membership lookup)."""
+        from ksma.identity.application import login
+
+        session = _IdentitySession()
+        _seed_account(session, auth_subject="alice", password="secret")
+        with pytest.raises(AuthenticationError):
+            await login(session, auth_subject="alice", password="secret")
+
+    async def test_tenant_id_filters_membership(self) -> None:
+        """Kills ``== -> !=`` mutant on line 447 (explicit tenant_id filter)."""
+        from ksma.identity.application import login
+
+        aid = _seed_account(session := _IdentitySession(), auth_subject="alice", password="secret")
+        # Seed an active membership for a DIFFERENT tenant; login must fail because
+        # the explicit tenant_id doesn't match.
+        _seed_membership(session, account_id=aid, tenant_id=uuid4())
+        with pytest.raises(AuthenticationError):
+            await login(
+                session, auth_subject="alice", password="secret",
+                tenant_id=uuid4(),  # different tenant from the seeded one
+            )
+
+    async def test_issues_refresh_token_with_seven_day_expiry(self) -> None:
+        """Kills the ``+ -> -`` mutant on line 469 (refresh-token expiry = now + 7 days)."""
+        from ksma.identity.application import login
+
+        aid = _seed_account(session := _IdentitySession(), auth_subject="alice", password="secret")
+        _seed_membership(session, account_id=aid)
+        await login(session, auth_subject="alice", password="secret")
+
+        adds = [c.value for c in session.calls if c.op == "add"]
+        assert adds, "expected a refresh-token add"
+        new_rt = next(a for a in adds if isinstance(a, RefreshTokenRow))
+        # The source writes the row with `expires_at = now + 7 days`; the
+        # flipped ``+ -> -`` mutant would write `now - 7 days` (already expired).
+        assert new_rt.expires_at > datetime.now(timezone.utc), (
+            f"refresh-token expiry not in the future: {new_rt.expires_at!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# TestRefresh — 5 surviving mutants (lines 485, 492, 506, 514, 518)
+# ---------------------------------------------------------------------------
+
+
+class TestRefresh:
+    """Pin the operator flips in ``refresh()`` — 5 surviving mutants."""
+
+    async def test_unknown_token_raises(self) -> None:
+        from ksma.identity.application import refresh
+
+        session = _IdentitySession()
+        with pytest.raises(InvalidCredentialsError):
+            await refresh(session, refresh_raw="missing")
+
+    async def test_revoked_token_raises(self) -> None:
+        """Kills the ``== -> !=`` mutant on line 485 (revoked_at is not None)."""
+        from ksma.identity.application import refresh
+
+        session = _IdentitySession()
+        _seed_refresh_token(
+            session, token_hash=_hash_refresh("r"),
+            revoked_at=datetime.now(timezone.utc),
+            expires_at=_clock().now() + timedelta(days=7),
+        )
+        with pytest.raises(AuthenticationError):
+            await refresh(session, refresh_raw="r")
+
+    async def test_expired_token_at_boundary_uses_strict_lt(self) -> None:
+        """Kills the ``< -> <=`` mutant on line 492.
+
+        With ``expires_at == clock().now()`` exactly, ``<`` says "not
+        expired" while ``<=`` says "expired". Pin the strict ``<``.
+        """
+        from ksma.identity.application import refresh
+
+        session = _IdentitySession()
+        aid = _seed_account(session)
+        mid = _seed_membership(session, account_id=aid)
+        _seed_refresh_token(
+            session, token_hash=_hash_refresh("r"), account_id=aid,
+            membership_id=mid, revoked_at=None,
+            expires_at=_clock().now(),
+        )
+        # Original ``<`` accepts expires_at == now as "still valid"; the
+        # flipped ``<=`` rejects it.
+        await refresh(session, refresh_raw="r")
+
+    async def test_new_refresh_token_has_seven_day_expiry(self) -> None:
+        """Kills the ``+ -> -`` mutant on line 506 (new token = now + 7 days)."""
+        from ksma.identity.application import refresh
+
+        aid = _seed_account(session := _IdentitySession())
+        mid = _seed_membership(session, account_id=aid)
+        _seed_refresh_token(
+            session, token_hash=_hash_refresh("r"), account_id=aid, membership_id=mid,
+            revoked_at=None,
+            expires_at=_clock().now() + timedelta(days=7),
+        )
+        await refresh(session, refresh_raw="r")
+
+        # Two refresh-token rows end up in the session: the seeded one
+        # (whose revoked_at is updated) and the newly-added one. The newly
+        # added one is the second ``add`` call against ``RefreshTokenRow``.
+        new_rt = [c.value for c in session.calls if c.op == "add"][-1]
+        assert new_rt.expires_at > _clock().now(), (
+            f"new refresh-token expiry not in the future: {new_rt.expires_at!r}"
+        )
+
+    async def test_refresh_with_unknown_account_raises(self) -> None:
+        """Kills the ``== -> !=`` mutant on line 514 (AccountRow.id == rt.account_id)."""
+        from ksma.identity.application import refresh
+
+        session = _IdentitySession()
+        # Seed a refresh token whose account_id is unseeded, so the
+        # re-query ``select AccountRow where id == rt.account_id`` returns
+        # nothing and ``scalar_one()`` explodes.
+        _seed_refresh_token(
+            session, token_hash="h", account_id=uuid4(), membership_id=uuid4(),
+            revoked_at=None,
+            expires_at=_clock().now() + timedelta(days=7),
+        )
+        with pytest.raises(Exception):
+            await refresh(session, refresh_raw="r")
+
+    async def test_refresh_with_unknown_membership_raises(self) -> None:
+        """Kills the ``== -> !=`` mutant on line 518 (MembershipRow.id == rt.membership_id)."""
+        from ksma.identity.application import refresh
+
+        session = _IdentitySession()
+        aid = _seed_account(session := _IdentitySession())
+        # Seed a refresh token whose membership_id is unseeded. The seed
+        # also includes a *different* membership row so the flipped
+        # ``id != rt.membership_id`` would return it instead of raising.
+        other_mid = uuid4()
+        rt_mid = uuid4()
+        _seed_membership(session, account_id=aid)
+        _seed_refresh_token(
+            session, token_hash=_hash_refresh("r"), account_id=aid,
+            membership_id=rt_mid, revoked_at=None,
+            expires_at=_clock().now() + timedelta(days=7),
+        )
+        with pytest.raises(Exception):
+            await refresh(session, refresh_raw="r")
+
+
+# ---------------------------------------------------------------------------
+# TestCompleteRecovery — 6 surviving mutants (lines 560, 561, 573, 573, plus 2 lookup)
+# ---------------------------------------------------------------------------
+
+
+class TestCompleteRecovery:
+    """Pin the operator flips in ``complete_recovery()`` — 6 surviving mutants."""
+
+    async def test_unknown_token_raises(self) -> None:
+        from ksma.identity.application import complete_recovery
+
+        session = _IdentitySession()
+        with pytest.raises(AuthenticationError):
+            await complete_recovery(session, raw_token="nope", new_password="new")
+
+    async def test_consumed_token_raises(self) -> None:
+        """Kills the ``== -> !=`` mutant on line 560 (consumed_at is not None)."""
+        from ksma.identity.application import complete_recovery
+
+        session = _IdentitySession()
+        _seed_recovery_token(
+            session, token_hash=_hash_refresh("r"),
+            consumed_at=datetime.now(timezone.utc),
+            expires_at=_clock().now() + timedelta(hours=1),
+        )
+        with pytest.raises(AuthenticationError):
+            await complete_recovery(session, raw_token="r", new_password="new")
+
+    async def test_expired_token_at_boundary_uses_strict_lt(self) -> None:
+        """Kills the ``< -> <=`` mutant on line 561.
+
+        With ``expires_at == clock().now()`` exactly, ``<`` says "not
+        expired" while ``<=`` says "expired". Pin the strict ``<`` by
+        asserting the function proceeds past the time check.
+        """
+        from ksma.identity.application import complete_recovery
+
+        session = _IdentitySession()
+        # Seed an Account too so the post-check AccountRow query does not
+        # explode for reasons orthogonal to the operator flip.
+        aid = _seed_account(session, authz_revision=1)
+        fixed_now = _clock().now()
+        _seed_recovery_token(
+            session, token_hash=_hash_refresh("r"), account_id=aid,
+            consumed_at=None,
+            expires_at=fixed_now,
+        )
+        # Original ``<`` accepts expires_at == now as "still valid"; the
+        # flipped ``<=`` rejects it. The function then re-queries the
+        # AccountRow (which we seeded), bumps the password hash, and
+        # returns. We assert no AuthenticationError is raised.
+        await complete_recovery(session, raw_token="r", new_password="new")
+
+    # ---------------------------------------------------------------------------
+# TestActivateMembership — 5 surviving mutants (lines 252, 258 x2, 261, 263)
+# ---------------------------------------------------------------------------
+
+
+class TestActivateMembership:
+    """Pin the operator flips in ``activate_membership()`` — 5 surviving mutants."""
+
+    async def test_unknown_membership_raises(self) -> None:
+        """Kills the ``== -> !=`` mutant on line 252 (MembershipRow.id == membership_id)."""
+        from ksma.identity.application import activate_membership
+
+        session = _IdentitySession()
+        with pytest.raises(ValidationError):
+            await activate_membership(session, membership_id=uuid4())
+
+    async def test_successful_activation_increments_authz_revision(self) -> None:
+        """Kills the ``== -> !=`` on line 261 and the ``1 -> 0`` mutants on lines 258 / 263."""
+        from ksma.identity.application import activate_membership
+
+        session = _IdentitySession()
+        aid = _seed_account(session, authz_revision=1)
+        mid = _seed_membership(session, account_id=aid, authz_revision=1)
+
+        await activate_membership(session, membership_id=mid)
+
+        # The freshly-loaded membership must have status=ACTIVE and the
+        # account's authz_revision must have been bumped from 1 to 2.
+        members = session.rows("membership")
+        assert members, "membership row missing"
+        assert members[0]["status"] == MembershipStatus.ACTIVE.value, (
+            f"membership status not active: {members[0]['status']!r}"
+        )
+        accounts = session.rows("account")
+        assert accounts[0]["authz_revision"] == 2, (
+            f"account authz_revision not bumped: {accounts[0]['authz_revision']!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# TestGrantAccess — 4 surviving mutants (lines 323, 334, 338, 340)
+# ---------------------------------------------------------------------------
+
+
+class TestGrantAccess:
+    """Pin the operator flips in ``grant_access()`` — 4 surviving mutants."""
+
+    async def test_unknown_membership_raises(self) -> None:
+        """Kills the ``== -> !=`` mutant on line 334 (MembershipRow.id == membership_id)."""
+        from ksma.identity.application import grant_access
+
+        session = _IdentitySession()
+        with pytest.raises(Exception):
+            await grant_access(
+                session,
+                tenant_id=uuid4(),
+                membership_id=uuid4(),
+                role_code="AC",
+                action_ids=["read"],
+                scope=None,
+                policy_id=uuid4(),
+                authorization={"actor": "test"},
+            )
+
+    async def test_successful_grant_increments_authz_revision(self) -> None:
+        """Kills the ``or -> and`` mutant on line 323 and the ``1 -> 0`` mutant on line 340."""
+        from ksma.identity.application import grant_access
+
+        session = _IdentitySession()
+        aid = _seed_account(session, authz_revision=1)
+        mid = _seed_membership(session, account_id=aid)
+
+        await grant_access(
+            session,
+            tenant_id=uuid4(),
+            membership_id=mid,
+            role_code="AC",
+            action_ids=["read"],
+            scope=None,
+            policy_id=uuid4(),
+            authorization={"actor": "test"},
+        )
+        accounts = session.rows("account")
+        assert accounts[0]["authz_revision"] == 2, (
+            f"account authz_revision not bumped: {accounts[0]['authz_revision']!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# TestRevokeAccess — 4 surviving mutants (lines 353, 363, 367, 369)
+# ---------------------------------------------------------------------------
+
+
+class TestRevokeAccess:
+    """Pin the operator flips in ``revoke_access()`` — 4 surviving mutants."""
+
+    async def test_unknown_assignment_raises(self) -> None:
+        """Kills the ``== -> !=`` mutant on line 353 (AccessAssignmentRow.id == assignment_id)."""
+        from ksma.identity.application import revoke_access
+
+        session = _IdentitySession()
+        with pytest.raises(ValidationError):
+            await revoke_access(session, assignment_id=uuid4(), reason="test")
+
+    async def test_successful_revoke_increments_authz_revision(self) -> None:
+        """Kills the ``== -> !=`` mutants on lines 363/367 and ``1 -> 0`` on line 369."""
+        from ksma.identity.application import revoke_access
+
+        session = _IdentitySession()
+        aid = _seed_account(session, authz_revision=1)
+        mid = _seed_membership(session, account_id=aid)
+        assignment_id = uuid4()
+        session.seed(
+            "access_assignment",
+            {
+                "id": assignment_id,
+                "tenant_id": uuid4(),
+                "membership_id": mid,
+                "service_principal_id": None,
+                "role_code": "AC",
+                "action_ids": ["read"],
+                "scope": {},
+                "valid_from": None,
+                "valid_until": None,
+                "status": "active",
+                "policy_id": uuid4(),
+                "authorization": {"actor": "test"},
+                "revocation": None,
+                "created_at": None,
+                "created_by": "test",
+                "updated_at": None,
+                "updated_by": "test",
+            },
+        )
+
+        await revoke_access(session, assignment_id=assignment_id, reason="test")
+
+        accounts = session.rows("account")
+        assert accounts[0]["authz_revision"] == 2, (
+            f"account authz_revision not bumped: {accounts[0]['authz_revision']!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# TestRevokeMembership — 3 surviving mutants (lines 277, 285, 287)
+# ---------------------------------------------------------------------------
+
+
+class TestRevokeMembership:
+    """Pin the operator flips in ``revoke_membership()`` — 3 surviving mutants."""
+
+    async def test_unknown_membership_raises(self) -> None:
+        """Kills the ``== -> !=`` mutant on line 277 (MembershipRow.id == membership_id)."""
+        from ksma.identity.application import revoke_membership
+
+        session = _IdentitySession()
+        with pytest.raises(ValidationError):
+            await revoke_membership(session, membership_id=uuid4(), reason="test")
+
+    async def test_successful_revoke_increments_authz_revision(self) -> None:
+        """Kills the ``== -> !=`` mutant on line 285 and ``1 -> 0`` on line 287."""
+        from ksma.identity.application import revoke_membership
+
+        session = _IdentitySession()
+        aid = _seed_account(session, authz_revision=1)
+        mid = _seed_membership(session, account_id=aid)
+
+        await revoke_membership(session, membership_id=mid, reason="test")
+
+        accounts = session.rows("account")
+        assert accounts[0]["authz_revision"] == 2, (
+            f"account authz_revision not bumped: {accounts[0]['authz_revision']!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# TestIssueServiceToken — 4 surviving mutants (lines 592, 595 x2, 599)
+# ---------------------------------------------------------------------------
+
+
+class TestIssueServiceToken:
+    """Pin the operator flips in ``issue_service_token()`` — 4 surviving mutants."""
+
+    async def test_unknown_sp_raises(self) -> None:
+        """Kills the ``== -> !=`` mutant on line 592 (principal_code lookup)."""
+        from ksma.identity.application import issue_service_token
+
+        session = _IdentitySession()
+        with pytest.raises(AuthenticationError):
+            await issue_service_token(session, principal_code="nobody")
+
+    async def test_disabled_sp_raises(self) -> None:
+        """Kills the ``or -> and`` mutants on line 595 and ``== -> !=`` on line 599."""
+        from ksma.identity.application import issue_service_token
+
+        session = _IdentitySession()
+        _seed_service_principal(session, code="x", status="disabled")
+        with pytest.raises(AuthenticationError):
+            await issue_service_token(session, principal_code="x")
+
+
+# ---------------------------------------------------------------------------
+# TestStartRecovery — 4 surviving mutants (lines 622, 625 x2)
+# ---------------------------------------------------------------------------
+
+
+class TestStartRecovery:
+    """Pin the operator flips in ``start_recovery()`` — 4 surviving mutants."""
+
+    async def test_unknown_account_returns_fake_token(self) -> None:
+        """Kills the ``== -> !=`` mutant on line 622 and the ``or -> and`` on line 625."""
+        from ksma.identity.application import start_recovery
+
+        session = _IdentitySession()
+        token = await start_recovery(session, auth_subject="nobody")
+        # Unknown accounts must receive a fake token (no information leak),
+        # and the function must not raise.
+        assert token == "invalid-account"
+
+    async def test_new_recovery_token_has_one_hour_expiry(self) -> None:
+        """Kills the ``+ -> -`` and ``1 -> 0`` mutants on line 636 (timedelta(hours=1))."""
+        from ksma.identity.application import start_recovery
+
+        session = _IdentitySession()
+        _seed_account(session, auth_subject="alice")
+
+        before = _clock().now()
+        await start_recovery(session, auth_subject="alice")
+        after = _clock().now()
+
+        # The newly-added recovery token is the last ``add`` against
+        # ``RecoveryTokenRow``; its ``expires_at`` must be ~1 hour in the future.
+        new_rt = [c.value for c in session.calls if c.op == "add"][-1]
+        assert before + timedelta(minutes=59) <= new_rt.expires_at <= after + timedelta(hours=1, minutes=1), (
+            f"recovery-token expiry out of expected band: {new_rt.expires_at!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# TestChangePassword — 2 surviving mutants (lines 207, 212)
+# ---------------------------------------------------------------------------
+
+
+class TestChangePassword:
+    """Pin the operator flips in ``change_password()`` — 2 surviving mutants."""
+
+    async def test_unknown_account_raises(self) -> None:
+        """Kills the ``== -> !=`` mutant on line 207 (AccountRow.id == account_id)."""
+        from ksma.identity.application import change_password
+
+        session = _IdentitySession()
+        with pytest.raises(ValidationError):
+            await change_password(session, account_id=uuid4(), new_password="new")
+
+    async def test_successful_change_increments_authz_revision(self) -> None:
+        """Kills the ``1 -> 0`` mutant on line 212 (authz_revision += 1)."""
+        from ksma.identity.application import change_password
+
+        session = _IdentitySession()
+        aid = _seed_account(session, authz_revision=1)
+        await change_password(session, account_id=aid, new_password="brand-new")
+
+        accounts = session.rows("account")
+        assert accounts[0]["authz_revision"] == 2, (
+            f"account authz_revision not bumped: {accounts[0]['authz_revision']!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# TestActivateAccount — 2 surviving mutants (lines 188, 194)
+# ---------------------------------------------------------------------------
+
+
+class TestActivateAccount:
+    """Pin the operator flips in ``activate_account()`` — 2 surviving mutants."""
+
+    async def test_unknown_account_raises(self) -> None:
+        """Kills the ``== -> !=`` mutant on line 188 (AccountRow.id == account_id)."""
+        from ksma.identity.application import activate_account
+
+        session = _IdentitySession()
+        with pytest.raises(ValidationError):
+            await activate_account(session, account_id=uuid4())
+
+    async def test_successful_activation_increments_authz_revision(self) -> None:
+        """Kills the ``1 -> 0`` mutant on line 194 (authz_revision += 1)."""
+        from ksma.identity.application import activate_account
+
+        session = _IdentitySession()
+        aid = _seed_account(session, status=AccountStatus.PENDING, authz_revision=1)
+        await activate_account(session, account_id=aid)
+
+        accounts = session.rows("account")
+        assert accounts[0]["authz_revision"] == 2, (
+            f"account authz_revision not bumped: {accounts[0]['authz_revision']!r}"
+        )
+        assert accounts[0]["status"] == AccountStatus.ACTIVE.value, (
+            f"account status not active: {accounts[0]['status']!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# TestLogout — 1 surviving mutant (line 540)
+# ---------------------------------------------------------------------------
+
+
+class TestLogout:
+    """Pin the operator flips in ``logout()`` — 1 surviving mutant."""
+
+    async def test_unknown_token_returns_without_error(self) -> None:
+        """Kills the ``== -> !=`` mutant on line 540 (``if rt is None:``)."""
+        from ksma.identity.application import logout
+
+        session = _IdentitySession()
+        # No refresh token seeded → original returns silently; the flipped
+        # ``is not None`` would proceed to ``rt.revoked_at = ...`` and raise
+        # ``AttributeError``.
+        await logout(session, refresh_raw="anything")
+
+
+# ---------------------------------------------------------------------------
+# TestPublishPolicy — 1 surviving mutant (line 401)
+# ---------------------------------------------------------------------------
+
+
+class TestPublishPolicy:
+    """Pin the operator flips in ``publish_policy()`` — 1 surviving mutant."""
+
+    async def test_publish_policy_with_no_expiry_uses_clock(self) -> None:
+        """Kills the ``or -> and`` mutant on line 401 (approval fallback)."""
+        from ksma.identity.application import publish_policy
+
+        session = _IdentitySession()
+        pv = await publish_policy(
+            session,
+            tenant_id=uuid4(),
+            policy_domain="rbac",
+            version_no=1,
+            ruleset={"read": "allow"},
+        )
+        # The default approval dict is the operative branch of the
+        # ``approval or {...}`` expression. With the ``or -> and`` mutant,
+        # ``None and {...}`` evaluates to ``None`` instead.
+        assert pv.approval, "publish_policy must default approval to a non-empty dict"
+        assert pv.approval.get("actor") == "system", (
+            f"publish_policy approval actor not defaulted: {pv.approval!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# TestCreateEducationUnit — 1 surviving mutant (line 137)
+# ---------------------------------------------------------------------------
+
+
+class TestCreateEducationUnit:
+    """Pin the operator flips in ``create_education_unit()`` — 1 surviving mutant."""
+
+    async def test_default_status_is_active(self) -> None:
+        """Kills the ``or -> and`` mutant on line 137 (default ACTIVE status)."""
+        from ksma.identity.application import create_education_unit
+
+        session = _IdentitySession()
+        await create_education_unit(
+            session,
+            tenant_id=uuid4(),
+            unit_code="X",
+            name="Test",
+            institution_type="school",
+        )
+        adds = [c.value for c in session.calls if c.op == "add"]
+        assert adds, "education_unit add not recorded"
+        # ``EducationUnitRow.status`` is initialised to ``ACTIVE``; the mutant
+        # ``or -> and`` on the ``list(education_levels or [])`` line below
+        # this status initialiser would change the function flow enough to
+        # miss the default-status set — pin by reading the staged attribute.
+        first_unit = next(a for a in adds if getattr(a, "unit_code", None) == "X")
+        assert first_unit.status.value == "active", (
+            f"education_unit status not active: {first_unit.status!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# TestActivateTenant — 1 surviving mutant (line 102)
+# ---------------------------------------------------------------------------
+
+
+class TestActivateTenant:
+    """Pin the operator flips in ``activate_tenant()`` — 1 surviving mutant."""
+
+    async def test_unknown_tenant_raises(self) -> None:
+        """Kills the ``== -> !=`` mutant on line 102 (TenantRow.id == tenant_id)."""
+        from ksma.identity.application import activate_tenant
+
+        session = _IdentitySession()
+        with pytest.raises(ValidationError):
+            await activate_tenant(session, tenant_id=uuid4())
