@@ -38,10 +38,10 @@ class TenantRow(Base):
     default_timezone: Mapped[str] = mapped_column(String(64), nullable=False)
     active_policy_id: Mapped[UUID | None] = mapped_column(PgUUID(as_uuid=True), nullable=True)
     activated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    created_by: Mapped[str] = mapped_column(Text, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    updated_by: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    created_by: Mapped[str] = mapped_column(Text, nullable=False, default="system")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    updated_by: Mapped[str] = mapped_column(Text, nullable=False, default="system")
 
 
 class EducationUnitRow(Base):
@@ -56,10 +56,10 @@ class EducationUnitRow(Base):
     location: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     timezone: Mapped[str] = mapped_column(String(64), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    created_by: Mapped[str] = mapped_column(Text, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    updated_by: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    created_by: Mapped[str] = mapped_column(Text, nullable=False, default="system")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    updated_by: Mapped[str] = mapped_column(Text, nullable=False, default="system")
 
     __table_args__ = (UniqueConstraint("tenant_id", "unit_code"),)
 
@@ -74,10 +74,10 @@ class AccountRow(Base):
     password_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     authz_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    created_by: Mapped[str] = mapped_column(Text, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    updated_by: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    created_by: Mapped[str] = mapped_column(Text, nullable=False, default="system")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    updated_by: Mapped[str] = mapped_column(Text, nullable=False, default="system")
 
     __table_args__ = (UniqueConstraint("auth_namespace", "auth_subject"),)
 
@@ -93,10 +93,10 @@ class MembershipRow(Base):
     valid_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     invitation_ref: Mapped[str | None] = mapped_column(String(120), nullable=True)
     revocation: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    created_by: Mapped[str] = mapped_column(Text, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    updated_by: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    created_by: Mapped[str] = mapped_column(Text, nullable=False, default="system")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    updated_by: Mapped[str] = mapped_column(Text, nullable=False, default="system")
 
     __table_args__ = (UniqueConstraint("tenant_id", "account_id"),)
 
@@ -141,7 +141,7 @@ class ServicePrincipalRow(Base):
     credential_ref: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     rotation_due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
 
 
 class PolicyVersionRow(Base):
@@ -157,10 +157,10 @@ class PolicyVersionRow(Base):
     ruleset: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     approval: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    created_by: Mapped[str] = mapped_column(Text, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    updated_by: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    created_by: Mapped[str] = mapped_column(Text, nullable=False, default="system")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    updated_by: Mapped[str] = mapped_column(Text, nullable=False, default="system")
 
     __table_args__ = (UniqueConstraint("tenant_id", "policy_domain", "version_no"),)
 
@@ -181,10 +181,10 @@ class AccessAssignmentRow(Base):
     policy_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("policy_version.id"), nullable=False)
     authorization: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     revocation: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    created_by: Mapped[str] = mapped_column(Text, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    updated_by: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    created_by: Mapped[str] = mapped_column(Text, nullable=False, default="system")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    updated_by: Mapped[str] = mapped_column(Text, nullable=False, default="system")
 
 
 class SupportGrantRow(Base):
@@ -200,7 +200,7 @@ class SupportGrantRow(Base):
     valid_until: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     revocation: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
 
 
 class AuditRecordRow(Base):

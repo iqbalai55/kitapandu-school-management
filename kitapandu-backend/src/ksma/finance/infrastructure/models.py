@@ -39,10 +39,10 @@ class BillingPartyRow(Base):
     display_name: Mapped[str] = mapped_column(Text, nullable=False)
     contact: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     organization_ref: Mapped[str | None] = mapped_column(String(120), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    created_by: Mapped[str] = mapped_column(Text, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    updated_by: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    created_by: Mapped[str] = mapped_column(Text, nullable=False, default="system")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    updated_by: Mapped[str] = mapped_column(Text, nullable=False, default="system")
 
 
 class InvoiceRow(Base):
@@ -59,10 +59,10 @@ class InvoiceRow(Base):
     issue_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     total_amount: Mapped[int] = mapped_column(Numeric(18, 0), nullable=False)
     policy_id: Mapped[UUID | None] = mapped_column(PgUUID(as_uuid=True), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    created_by: Mapped[str] = mapped_column(Text, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    updated_by: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    created_by: Mapped[str] = mapped_column(Text, nullable=False, default="system")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    updated_by: Mapped[str] = mapped_column(Text, nullable=False, default="system")
 
     __table_args__ = (
         CheckConstraint(
@@ -88,8 +88,8 @@ class InvoiceLineRow(Base):
     unit_price: Mapped[int] = mapped_column(Numeric(18, 0), nullable=False)
     discount_amount: Mapped[int] = mapped_column(Numeric(18, 0), nullable=False, default=0)
     net_amount: Mapped[int] = mapped_column(Numeric(18, 0), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    created_by: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    created_by: Mapped[str] = mapped_column(Text, nullable=False, default="system")
 
     __table_args__ = (
         UniqueConstraint("invoice_id", "line_no"),
@@ -108,8 +108,8 @@ class InstallmentRow(Base):
     due_date: Mapped[date] = mapped_column(Date, nullable=False)
     due_amount: Mapped[int] = mapped_column(Numeric(18, 0), nullable=False)
     timezone: Mapped[str] = mapped_column(String(64), nullable=False, default="Asia/Jakarta")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    created_by: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    created_by: Mapped[str] = mapped_column(Text, nullable=False, default="system")
 
     __table_args__ = (
         UniqueConstraint("invoice_id", "sequence_no"),
@@ -133,8 +133,8 @@ class PaymentSubmissionRow(Base):
     transfer_reference: Mapped[str | None] = mapped_column(String(120), nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     review_decision: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
 
     __table_args__ = (
         CheckConstraint(
@@ -158,8 +158,8 @@ class VerifiedPaymentRow(Base):
     verification: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     received_date: Mapped[date] = mapped_column(Date, nullable=False)
     reversal_total: Mapped[int] = mapped_column(Numeric(18, 0), nullable=False, default=0)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    created_by: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    created_by: Mapped[str] = mapped_column(Text, nullable=False, default="system")
 
     __table_args__ = (
         # R13: exactly one verified payment per submission
@@ -198,8 +198,8 @@ class ReceiptRow(Base):
     snapshot: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     supersedes_id: Mapped[UUID | None] = mapped_column(PgUUID(as_uuid=True), ForeignKey("receipt.id"), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    created_by: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    created_by: Mapped[str] = mapped_column(Text, nullable=False, default="system")
 
     __table_args__ = (
         UniqueConstraint("tenant_id", "receipt_no"),
@@ -224,8 +224,8 @@ class FinancialAdjustmentRow(Base):
     effective_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     idempotency_id: Mapped[UUID | None] = mapped_column(PgUUID(as_uuid=True), nullable=True)
     policy_id: Mapped[UUID | None] = mapped_column(PgUUID(as_uuid=True), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    created_by: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    created_by: Mapped[str] = mapped_column(Text, nullable=False, default="system")
 
     __table_args__ = (
         CheckConstraint(
