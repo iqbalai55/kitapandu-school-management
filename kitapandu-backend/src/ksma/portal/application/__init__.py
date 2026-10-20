@@ -12,6 +12,7 @@ from uuid import UUID, uuid4
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ksma.portal.infrastructure.repositories import InternalNotificationRepository
 from ksma.shared.errors import ValidationError
 from ksma.shared.events import bus
 from ksma.shared.outbox import enqueue
@@ -144,6 +145,48 @@ async def list_inbox(
         }
         for r in rows
     ]
+
+
+async def dispatch_event_to_inbox(
+    session: AsyncSession,
+    ctx: TenantContext,
+    *,
+    event_type: str,
+    event_id: UUID,
+    notification_kind: str,
+    summary: str,
+    source_ref: dict[str, Any],
+    recipient_account_ids: list[UUID],
+) -> int:
+    """Project a domain event into one ``internal_notification`` per recipient.
+
+    Each insert honours the ``(tenant_id, recipient_account_id, event_id,
+    notification_kind)`` UNIQUE constraint (V21 dedup) — a re-dispatch with
+    the same ``(event_id, kind)`` returns the same number of rows as a no-op
+    for the affected recipients, while still letting a new ``event_id`` land
+    one fresh row per recipient.
+
+    Returns the number of rows that actually landed (i.e. excluding the
+    recipients whose insert was suppressed by the unique constraint).
+
+    Used by the audit-projection consumer in
+    ``portal.interface.audit_projection`` after the outbox / in-process bus
+    dispatches an event.
+    """
+    if not recipient_account_ids:
+        return 0
+    repo = InternalNotificationRepository(session, ctx.tenant_id)
+    inserted = 0
+    for recipient_account_id in recipient_account_ids:
+        if await repo.write_or_ignore(
+            recipient_account_id=recipient_account_id,
+            event_id=event_id,
+            notification_kind=notification_kind,
+            source_ref=source_ref,
+            summary=summary,
+        ):
+            inserted += 1
+    return inserted
 
 
 def _json(d: Any) -> str:
