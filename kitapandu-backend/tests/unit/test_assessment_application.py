@@ -31,8 +31,6 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from tests.unit.conftest_helpers import FakeAsyncSession, FakeTenantContext
-
 from ksma.assessment.application import (
     create_assessment,
     review_assessment,
@@ -45,10 +43,6 @@ from ksma.assessment.domain import (
     AssessmentStatus,
     ResultState,
 )
-from ksma.assessment.infrastructure.repositories import (
-    AssessmentRepository,
-    AssessmentResultRepository,
-)
 from ksma.program.domain import (
     IndicatorValueKind,
     RubricIndicator,
@@ -56,11 +50,10 @@ from ksma.program.domain import (
     RubricVersionStatus,
     Scale,
 )
-from ksma.program.infrastructure.repositories import RubricRepository
 from ksma.shared.errors import StateConflictError, ValidationError
 from ksma.shared.events import bus
 from ksma.shared.rbac import RoleCode
-
+from tests.unit.conftest_helpers import FakeAsyncSession, FakeTenantContext
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -192,17 +185,16 @@ class TestSetResult:
             patch(
                 "ksma.assessment.application.AssessmentResultRepository",
                 return_value=result_repo,
-            ),
+            ),pytest.raises(ValidationError) as exc_info
         ):
-            with pytest.raises(ValidationError) as exc_info:
-                await set_result(
-                    session,
-                    ctx,
-                    assessment_id=assessment_id,
-                    indicator_id=indicator_id,
-                    numeric_value=80.0,
-                    category_code="A",
-                )
+            await set_result(
+                session,
+                ctx,
+                assessment_id=assessment_id,
+                indicator_id=indicator_id,
+                numeric_value=80.0,
+                category_code="A",
+            )
         assert "V10" in str(exc_info.value)
         # No upsert happened — the rejection is the headline of the gate.
         assert result_repo.upsert.await_count == 0
@@ -247,16 +239,15 @@ class TestSetResult:
             patch(
                 "ksma.assessment.application.AssessmentResultRepository",
                 return_value=result_repo,
-            ),
+            ),pytest.raises(ValidationError) as exc_info
         ):
-            with pytest.raises(ValidationError) as exc_info:
-                await set_result(
-                    session,
-                    ctx,
-                    assessment_id=assessment_id,
-                    indicator_id=indicator_id,
-                    numeric_value=150.0,
-                )
+            await set_result(
+                session,
+                ctx,
+                assessment_id=assessment_id,
+                indicator_id=indicator_id,
+                numeric_value=150.0,
+            )
         assert "out of scale range" in str(exc_info.value)
         assert result_repo.upsert.await_count == 0
 
@@ -367,16 +358,15 @@ class TestSetResultScope:
             patch(
                 "ksma.assessment.application.AssessmentResultRepository",
                 return_value=result_repo,
-            ),
+            ),pytest.raises(ValidationError) as exc_info
         ):
-            with pytest.raises(ValidationError) as exc_info:
-                await set_result(
-                    session,
-                    ctx,
-                    assessment_id=assessment_id,
-                    indicator_id=foreign_indicator_id,
-                    numeric_value=80.0,
-                )
+            await set_result(
+                session,
+                ctx,
+                assessment_id=assessment_id,
+                indicator_id=foreign_indicator_id,
+                numeric_value=80.0,
+            )
         assert "rubric" in str(exc_info.value).lower()
         assert result_repo.upsert.await_count == 0
 
@@ -480,9 +470,8 @@ class TestSubmitAssessment:
         )
         with patch(
             "ksma.assessment.application.AssessmentRepository", return_value=arepo
-        ):
-            with pytest.raises(StateConflictError):
-                await submit_assessment(session, ctx, assessment_id=assessment_id)
+        ), pytest.raises(StateConflictError):
+            await submit_assessment(session, ctx, assessment_id=assessment_id)
         assert arepo.update_status.await_count == 0
 
     async def test_transitions_draft_to_submitted_when_required_filled(self) -> None:
@@ -508,7 +497,9 @@ class TestSubmitAssessment:
             rubric_version_id=rubric_version_id,
             status=AssessmentStatus.DRAFT,
         )
-        result_id = uuid4()
+        # A fresh result id is created but discarded: the production code
+        # generates a new uuid on update, so this fixture doesn't capture it.
+        uuid4()
         arepo.update_status.return_value = None
         rrepo = AsyncMock()
         rrepo.list_indicators.return_value = [
@@ -569,9 +560,8 @@ class TestPostReviewAssessment:
         )
         with patch(
             "ksma.assessment.application.AssessmentRepository", return_value=arepo
-        ):
-            with pytest.raises(StateConflictError):
-                await review_assessment(session, ctx, assessment_id=assessment_id)
+        ), pytest.raises(StateConflictError):
+            await review_assessment(session, ctx, assessment_id=assessment_id)
         assert arepo.update_status.await_count == 0
 
     async def test_transitions_submitted_to_reviewed(self) -> None:
@@ -616,7 +606,6 @@ class TestSupersedeAssessment:
         assessment loses its rubric link. The original ``or`` falls
         back to ``old.rubric_version_id``.
         """
-        from ksma.assessment.infrastructure.repositories import AssessmentRepository
 
         session = FakeAsyncSession()
         tenant_id = uuid4()

@@ -12,6 +12,8 @@ Seam: the value object itself. Tests assert behavior on the public
 """
 from __future__ import annotations
 
+from enum import StrEnum as _StrEnum
+
 import pytest
 
 from ksma.shared.errors import CurrencyMismatchError, NegativeBalanceError
@@ -110,9 +112,6 @@ class TestStringRepr:
 # ---------------------------------------------------------------------------
 
 
-from enum import StrEnum as _StrEnum
-
-
 class _SiblingCurrency(_StrEnum):
     """A second StrEnum (NOT a subclass of Currency) used only for the
     cross-currency arithmetic tests.
@@ -203,7 +202,7 @@ def test_negative_construction_raises_negative_balance_error() -> None:
     with pytest.raises(NegativeBalanceError) as exc_info:
         Money(amount=-1, currency=Currency.IDR)
     # Sanity: this IS a DomainError (so the global FastAPI handler picks it up).
-    from ksma.shared.errors import DomainError
+    from ksma.shared.errors import DomainError  # noqa: PLC0415
     assert isinstance(exc_info.value, DomainError)
     # And it carries the canonical wire code.
     assert exc_info.value.code == "NEGATIVE_BALANCE"

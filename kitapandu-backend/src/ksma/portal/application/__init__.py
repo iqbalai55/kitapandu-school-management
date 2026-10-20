@@ -12,6 +12,7 @@ from uuid import UUID, uuid4
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ksma.portal.domain.events import ServiceRequestSubmitted
 from ksma.portal.infrastructure.repositories import InternalNotificationRepository
 from ksma.shared.errors import ValidationError
 from ksma.shared.events import bus
@@ -59,24 +60,9 @@ async def submit_service_request(
             },
         )
     ).first()
-    await enqueue(
-        session,
-        __import__("ksma.portal.application", fromlist=[""])._REQ_SUBMITTED
-        if False
-        else __import__("ksma.shared.events", fromlist=["DomainEvent"]).DomainEvent(
-            event_type="ServiceRequestSubmitted",
-            tenant_id=ctx.tenant_id,
-            actor_id=ctx.account_id,
-        ),
-        aggregate_ref=f"service_request:{r.id}",
-    )
-    bus().dispatch(
-        __import__("ksma.shared.events", fromlist=["DomainEvent"]).DomainEvent(
-            event_type="ServiceRequestSubmitted",
-            tenant_id=ctx.tenant_id,
-            actor_id=ctx.account_id,
-        )
-    )
+    event = ServiceRequestSubmitted(tenant_id=ctx.tenant_id, actor_id=ctx.account_id)
+    await enqueue(session, event, aggregate_ref=f"service_request:{r.id}")
+    bus().dispatch(event)
     return {"id": r.id, "status": r.status}
 
 

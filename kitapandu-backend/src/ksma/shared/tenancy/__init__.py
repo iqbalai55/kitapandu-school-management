@@ -40,3 +40,13 @@ class TenantContext:
 
     def has_role(self, code: str) -> bool:
         return code in self.role_codes
+
+    @property
+    def primary_role_code(self) -> str:
+        """First granted role code, or ``"unknown"`` when the actor holds none.
+
+        Single source of truth for the role code recorded on audit rows
+        (``authorization_ref.role_code``); previously each audit call site
+        inlined ``role_codes[0] if role_codes else "unknown"``.
+        """
+        return self.role_codes[0] if self.role_codes else "unknown"

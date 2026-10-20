@@ -7,6 +7,8 @@ a real Postgres session and lives in integration tests.
 from __future__ import annotations
 
 import json
+from dataclasses import FrozenInstanceError
+from datetime import UTC
 from uuid import uuid4
 
 import pytest
@@ -84,7 +86,7 @@ class TestIdempotencyContext:
             action_id="REG-A02",
             subject_account_id=uuid4(), tenant_id=uuid4(),
         )
-        with pytest.raises(Exception):  # FrozenInstanceError or AttributeError
+        with pytest.raises(FrozenInstanceError):
             ctx.action_id = "FIN-A05"  # type: ignore[misc]
 
 
@@ -138,7 +140,7 @@ class _FakeAsyncSession:
 @pytest.mark.asyncio
 async def test_check_or_register_raises_on_same_key_different_body() -> None:
     """R21: same Idempotency-Key + different request body MUST raise."""
-    from ksma.shared.idempotency import check_or_register
+    from ksma.shared.idempotency import check_or_register  # noqa: PLC0415
 
     existing_id = uuid4()
     existing = _FakeRow(
@@ -173,7 +175,7 @@ async def test_check_or_register_raises_on_same_key_different_body() -> None:
 @pytest.mark.asyncio
 async def test_check_or_register_returns_succeeded_record_when_body_matches() -> None:
     """Same key + same body + status='succeeded' returns the stored record."""
-    from ksma.shared.idempotency import check_or_register
+    from ksma.shared.idempotency import check_or_register  # noqa: PLC0415
 
     existing_id = uuid4()
     request_hash = "abcd" * 16
@@ -204,7 +206,7 @@ async def test_check_or_register_returns_succeeded_record_when_body_matches() ->
 @pytest.mark.asyncio
 async def test_check_or_register_inserts_when_no_prior_record() -> None:
     """First request with a fresh key inserts an 'in_progress' row."""
-    from ksma.shared.idempotency import check_or_register
+    from ksma.shared.idempotency import check_or_register  # noqa: PLC0415
 
     session = _FakeAsyncSession(lookup_rows=[])  # no prior record
 
@@ -251,7 +253,9 @@ def test_replay_after_grant_revocation_yields_allowed_false() -> None:
     Pin the resolver decision here so any change to ``evaluate()`` that
     lets a revoked grant slip through is caught.
     """
-    from ksma.shared.rbac import (
+    from datetime import datetime  # noqa: PLC0415
+
+    from ksma.shared.rbac import (  # noqa: PLC0415
         ActionCode,
         GrantDecision,
         GrantRow,
@@ -260,15 +264,14 @@ def test_replay_after_grant_revocation_yields_allowed_false() -> None:
         Target,
         evaluate,
     )
-    from datetime import datetime, timezone
 
-    fixed_now = datetime(2026, 10, 20, 12, 0, 0, tzinfo=timezone.utc)
+    fixed_now = datetime(2026, 10, 20, 12, 0, 0, tzinfo=UTC)
     revoked_grant = GrantRow(
         id=uuid4(),
         role_code=RoleCode.FI,
         action_ids=frozenset({ActionCode.FIN_A05}),
         scope=Scope(),
-        valid_from=datetime(2020, 1, 1, tzinfo=timezone.utc),
+        valid_from=datetime(2020, 1, 1, tzinfo=UTC),
         valid_until=None,
         status="revoked",
         policy_id=uuid4(),

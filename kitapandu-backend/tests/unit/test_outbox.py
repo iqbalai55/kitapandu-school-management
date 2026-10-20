@@ -6,11 +6,12 @@ by integration tests with testcontainers.
 """
 from __future__ import annotations
 
-from uuid import UUID, uuid4
+from typing import ClassVar
+from uuid import UUID
 
 import pytest
 
-from ksma.shared.events import DomainEvent, EventBus, bus
+from ksma.shared.events import DomainEvent, EventBus
 
 
 class ConcreteEvent(DomainEvent):
@@ -25,18 +26,18 @@ class OtherEvent(DomainEvent):
 
 class TestEventBus:
     def test_handler_receives_event(self) -> None:
-        captured = []
+        captured: list[DomainEvent] = []
         local_bus = EventBus()
-        local_bus.subscribe(ConcreteEvent, lambda e: captured.append(e))
+        local_bus.subscribe(ConcreteEvent, captured.append)
         event = ConcreteEvent()
         local_bus.dispatch(event)
         assert captured == [event]
 
     def test_multiple_handlers_in_registration_order(self) -> None:
-        order = []
+        order: list[str] = []
         local_bus = EventBus()
-        local_bus.subscribe(ConcreteEvent, lambda e: order.append("first"))
-        local_bus.subscribe(ConcreteEvent, lambda e: order.append("second"))
+        local_bus.subscribe(ConcreteEvent, lambda _e: order.append("first"))
+        local_bus.subscribe(ConcreteEvent, lambda _e: order.append("second"))
         local_bus.dispatch(ConcreteEvent())
         assert order == ["first", "second"]
 
@@ -45,11 +46,11 @@ class TestEventBus:
         local_bus.dispatch(ConcreteEvent())  # should not raise
 
     def test_handler_isolation_by_event_type(self) -> None:
-        concrete_seen = []
-        other_seen = []
+        concrete_seen: list[DomainEvent] = []
+        other_seen: list[DomainEvent] = []
         local_bus = EventBus()
-        local_bus.subscribe(ConcreteEvent, lambda e: concrete_seen.append(e))
-        local_bus.subscribe(OtherEvent, lambda e: other_seen.append(e))
+        local_bus.subscribe(ConcreteEvent, concrete_seen.append)
+        local_bus.subscribe(OtherEvent, other_seen.append)
         local_bus.dispatch(ConcreteEvent())
         assert len(concrete_seen) == 1
         assert len(other_seen) == 0
@@ -76,16 +77,16 @@ class TestEventBus:
 
 class TestProcessBus:
     def test_default_bus_is_singleton(self) -> None:
-        from ksma.shared.events import bus as bus_fn
+        from ksma.shared.events import bus as bus_fn  # noqa: PLC0415
 
         assert bus_fn() is bus_fn()
 
     def test_default_bus_routes(self) -> None:
-        from ksma.shared.events import bus as bus_fn
+        from ksma.shared.events import bus as bus_fn  # noqa: PLC0415
 
-        captured = []
+        captured: list[DomainEvent] = []
         # Subscribe on the process-wide bus; remember to clean up.
-        bus_fn().subscribe(ConcreteEvent, lambda e: captured.append(e))
+        bus_fn().subscribe(ConcreteEvent, captured.append)
         try:
             bus_fn().dispatch(ConcreteEvent())
         finally:
@@ -162,7 +163,7 @@ class _RecordingAsyncSession:
 async def test_enqueue_inserts_into_outbox_table_with_correct_shape() -> None:
     """``enqueue`` must build an INSERT against ``outbox_messages`` with
     the right column set and bind the event payload."""
-    from ksma.shared.outbox import OUTBOX_TABLE, enqueue
+    from ksma.shared.outbox import OUTBOX_TABLE, enqueue  # noqa: PLC0415
 
     session = _RecordingAsyncSession()
     event = ConcreteEvent()
@@ -187,7 +188,7 @@ async def test_enqueue_inserts_into_outbox_table_with_correct_shape() -> None:
 @pytest.mark.asyncio
 async def test_enqueue_with_aggregate_ref_propagates_bind() -> None:
     """The optional ``aggregate_ref`` kwarg must thread through to the INSERT."""
-    from ksma.shared.outbox import enqueue
+    from ksma.shared.outbox import enqueue  # noqa: PLC0415
 
     session = _RecordingAsyncSession()
     event = ConcreteEvent()
@@ -209,7 +210,7 @@ async def test_outbox_event_not_enqueued_when_session_scope_rolls_back() -> None
       (c) rollback was called (NOT commit) — which a real Postgres session
           will turn into the row disappearing.
     """
-    from ksma.shared.outbox import enqueue
+    from ksma.shared.outbox import enqueue  # noqa: PLC0415
 
     session = _RecordingAsyncSession()
     event = ConcreteEvent()
@@ -243,7 +244,7 @@ async def test_outbox_event_enqueued_on_clean_commit() -> None:
     visible. This pins the symmetry with the failing path so a `not
     raised → commit` branch mutation is also caught.
     """
-    from ksma.shared.outbox import enqueue
+    from ksma.shared.outbox import enqueue  # noqa: PLC0415
 
     session = _RecordingAsyncSession()
     event = ConcreteEvent()
@@ -277,7 +278,7 @@ async def test_session_scope_commits_on_clean_body() -> None:
     """``session_scope`` must call ``commit()`` on the session if the body exits
     without an exception. A `commit` → ``rollback`` flip would surface here.
     """
-    from contextlib import asynccontextmanager
+    from contextlib import asynccontextmanager  # noqa: PLC0415
 
     sessions: list[_RecordingAsyncSession] = []
 
@@ -292,7 +293,7 @@ async def test_session_scope_commits_on_clean_body() -> None:
             await s.rollback()
             raise
 
-    async with fake_session_scope() as session:
+    async with fake_session_scope():
         # No exception raised inside the body.
         pass
 
@@ -308,7 +309,7 @@ async def test_session_scope_rolls_back_on_exception() -> None:
     persisted. A `commit` on exception (instead of ``rollback``) is the
     killer bug the issue targets.
     """
-    from contextlib import asynccontextmanager
+    from contextlib import asynccontextmanager  # noqa: PLC0415
 
     sessions: list[_RecordingAsyncSession] = []
 

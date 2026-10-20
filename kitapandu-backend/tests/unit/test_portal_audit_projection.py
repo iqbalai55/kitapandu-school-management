@@ -57,6 +57,7 @@ from tests.unit.conftest_helpers import (
     FakeAsyncSession,
     FakeRepository,
     FakeResult,
+    FakeRow,
     SessionCall,
     assert_repo_added,
     assert_repo_state,
@@ -64,6 +65,11 @@ from tests.unit.conftest_helpers import (
 
 # The four columns of the V21 UNIQUE constraint.
 _V21_KEY = ("tenant_id", "recipient_account_id", "event_id", "notification_kind")
+
+# The id Postgres hands back from the service-request ``INSERT … RETURNING``.
+# A literal, so asserting the caller got *this* id back is a real check and
+# not a restatement of whatever the fake decided to generate.
+_REQUEST_ID = UUID("3f8c1d64-9a0b-4c1e-8f52-6d7b0e2a4c39")
 
 
 def _sql_of(statement: Any) -> str:
@@ -163,6 +169,24 @@ class V21NotificationRepository(FakeRepository):
             return False
         self.create(candidate)
         return True
+
+
+class ReturningSession(FakeAsyncSession):
+    """``FakeAsyncSession`` that answers ``INSERT … RETURNING`` with a row.
+
+    Postgres hands the ``RETURNING`` projection back to the caller, which is
+    how ``submit_service_request`` learns the id of the request it just
+    wrote. The base fake returns no rows for an insert, which would make the
+    happy path unrepresentable.
+    """
+
+    async def execute(
+        self, statement: Any, parameters: dict[str, Any] | None = None
+    ) -> FakeResult:
+        result = await super().execute(statement, parameters)
+        if "RETURNING" in _sql_of(statement).upper():
+            return FakeResult([FakeRow({"id": _REQUEST_ID, "status": "open"})], rowcount=1)
+        return result
 
 
 def _outbox_row(event_type: str) -> dict[str, Any]:
@@ -623,24 +647,36 @@ class TestPortalApplication:
             )
 
     async def test_an_accepted_request_reaches_the_service_event_branch(self) -> None:
-        """The event is built from the live ``else`` branch of the guard."""
-        session = FakeAsyncSession()
+        """An accepted request is written, published, and reported back.
 
-        # `submit_service_request` builds its event through the
-        # ``... if False else DomainEvent(...)`` expression. That branch hands
-        # ``event_type`` (a ClassVar) to a dataclass ``__init__``, so today the
-        # call ends in TypeError — never in the dead branch's AttributeError.
-        with pytest.raises(TypeError) as err:
-            await submit_service_request(
-                session,
-                _ctx(uuid4(), uuid4()),
-                participant_id=uuid4(),
-                category="academic",
-                description="Please explain my mark",
-            )
+        The happy path has to survive end to end: the ``INSERT`` lands, the
+        ``ServiceRequestSubmitted`` event is enqueued on the outbox with the
+        new request's id, and the caller gets that same id back. This is the
+        behaviour #54 was blocking — the call used to die in a ``TypeError``
+        raised while *building* the event, after the row was already written.
+        """
+        session = ReturningSession()
+        tenant_id, account_id = uuid4(), uuid4()
 
-        assert "event_type" in str(err.value)
+        result = await submit_service_request(
+            session,
+            _ctx(tenant_id, account_id),
+            participant_id=uuid4(),
+            category="academic",
+            description="Please explain my mark",
+        )
+
+        assert result == {"id": _REQUEST_ID, "status": "open"}
         session.assert_called(op="execute", params_contains="Please explain my mark")
+
+        # The event is enqueued against the request the INSERT just produced,
+        # under its own event type — that string is what consumers route on.
+        enqueued = session.assert_called(
+            op="execute", sql_contains="INSERT INTO outbox_messages"
+        )
+        assert enqueued.params["event_type"] == "ServiceRequestSubmitted"
+        assert enqueued.params["aggregate_ref"] == f"service_request:{_REQUEST_ID}"
+        assert enqueued.params["tenant_id"] == str(tenant_id)
 
     async def test_list_inbox_maps_the_notification_row(self) -> None:
         session = FakeAsyncSession()

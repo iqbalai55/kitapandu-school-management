@@ -32,17 +32,12 @@ What is NOT asserted here (lives in the integration tier):
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import Mock
 from uuid import UUID, uuid4
 
 import pytest
-
-from tests.unit.conftest_helpers import (
-    FakeAsyncSession,
-    FakeTenantContext,
-)
 
 from ksma.session.application import (
     add_revision,
@@ -58,7 +53,10 @@ from ksma.session.domain import (
 )
 from ksma.shared.events import bus
 from ksma.shared.rbac import RoleCode
-
+from tests.unit.conftest_helpers import (
+    FakeAsyncSession,
+    FakeTenantContext,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -177,7 +175,7 @@ def _patch_enrollment_join(
     top-level ``id = :sid`` predicate). This patches the single SQL
     affected and routes everything else through the fake.
     """
-    from tests.unit.conftest_helpers import FakeResult, FakeRow
+    from tests.unit.conftest_helpers import FakeResult, FakeRow  # noqa: PLC0415
 
     orig_execute = session.execute
 
@@ -214,7 +212,7 @@ class TestCloseSession:
 
     async def test_session_rejects_cancelled_lifecycle(self) -> None:
         """A cancelled session is rejected before the closure checklist runs."""
-        from ksma.shared.errors import StateConflictError
+        from ksma.shared.errors import StateConflictError  # noqa: PLC0415
 
         session = FakeAsyncSession()
         tenant_id = uuid4()
@@ -235,7 +233,7 @@ class TestCloseSession:
 
     async def test_session_rejects_already_closed(self) -> None:
         """A second close on an already-closed session is rejected."""
-        from ksma.shared.errors import StateConflictError
+        from ksma.shared.errors import StateConflictError  # noqa: PLC0415
 
         session = FakeAsyncSession()
         tenant_id = uuid4()
@@ -255,7 +253,6 @@ class TestCloseSession:
         branch (line 325): a flipped operator would mark this enrollment
         as missing-attendance and the closure would fail.
         """
-        from ksma.shared.errors import ValidationError
 
         session = FakeAsyncSession()
         tenant_id = uuid4()
@@ -287,7 +284,7 @@ class TestCloseSession:
         filter misreads the subquery), so the enrollment row is supplied
         via an ``AsyncMock`` for the single ``FROM enrollment e`` call.
         """
-        from ksma.shared.errors import ValidationError
+        from ksma.shared.errors import ValidationError  # noqa: PLC0415
 
         session = FakeAsyncSession()
         tenant_id = uuid4()
@@ -310,7 +307,7 @@ class TestCloseSession:
 
     async def test_missing_journal_blocks_closure(self) -> None:
         """A session with no teaching journal is rejected."""
-        from ksma.shared.errors import ValidationError
+        from ksma.shared.errors import ValidationError  # noqa: PLC0415
 
         session = FakeAsyncSession()
         tenant_id = uuid4()
@@ -338,7 +335,7 @@ class TestCloseSession:
         Pins the ``j is None or not j.topic`` short-circuit (line 343) so a
         ``or -> and`` flip on the empty-topic guard is caught.
         """
-        from ksma.shared.errors import ValidationError
+        from ksma.shared.errors import ValidationError  # noqa: PLC0415
 
         session = FakeAsyncSession()
         tenant_id = uuid4()
@@ -367,7 +364,7 @@ class TestCloseSession:
         one flips the closure record into a state that doesn't actually
         encode the invariants.
         """
-        from ksma.session.domain.events import SessionClosed
+        from ksma.session.domain.events import SessionClosed  # noqa: PLC0415
 
         session = FakeAsyncSession()
         tenant_id = uuid4()
@@ -422,7 +419,7 @@ class TestCorrectSession:
 
     async def test_empty_correction_reason_rejected(self) -> None:
         """An empty ``correction_reason`` is a ValidationError (line 395)."""
-        from ksma.shared.errors import ValidationError
+        from ksma.shared.errors import ValidationError  # noqa: PLC0415
 
         session = FakeAsyncSession()
         tenant_id = uuid4()
@@ -438,7 +435,7 @@ class TestCorrectSession:
 
     async def test_rejects_non_closed_session(self) -> None:
         """Correction is only valid on a CLOSED session."""
-        from ksma.shared.errors import StateConflictError
+        from ksma.shared.errors import StateConflictError  # noqa: PLC0415
 
         session = FakeAsyncSession()
         tenant_id = uuid4()
@@ -518,7 +515,7 @@ class TestAddRevision:
 
     async def test_rejected_when_cancelled(self) -> None:
         """A cancelled session does not accept new revisions (line 117)."""
-        from ksma.shared.errors import StateConflictError
+        from ksma.shared.errors import StateConflictError  # noqa: PLC0415
 
         session = FakeAsyncSession()
         tenant_id = uuid4()
@@ -533,15 +530,15 @@ class TestAddRevision:
                 session,
                 ctx,
                 session_id=sid,
-                starts_at=datetime(2026, 1, 1, 8, 0, tzinfo=timezone.utc),
-                ends_at=datetime(2026, 1, 1, 9, 0, tzinfo=timezone.utc),
+                starts_at=datetime(2026, 1, 1, 8, 0, tzinfo=UTC),
+                ends_at=datetime(2026, 1, 1, 9, 0, tzinfo=UTC),
                 timezone_str="UTC",
                 change_reason="oops",
             )
 
     async def test_rejected_when_closed(self) -> None:
         """A closed session does not accept new revisions (line 119)."""
-        from ksma.shared.errors import StateConflictError
+        from ksma.shared.errors import StateConflictError  # noqa: PLC0415
 
         session = FakeAsyncSession()
         tenant_id = uuid4()
@@ -556,8 +553,8 @@ class TestAddRevision:
                 session,
                 ctx,
                 session_id=sid,
-                starts_at=datetime(2026, 1, 1, 8, 0, tzinfo=timezone.utc),
-                ends_at=datetime(2026, 1, 1, 9, 0, tzinfo=timezone.utc),
+                starts_at=datetime(2026, 1, 1, 8, 0, tzinfo=UTC),
+                ends_at=datetime(2026, 1, 1, 9, 0, tzinfo=UTC),
                 timezone_str="UTC",
                 change_reason="oops",
             )
@@ -565,7 +562,7 @@ class TestAddRevision:
 
     async def test_ends_at_must_be_strictly_after_starts_at(self) -> None:
         """``ends_at <= starts_at`` is rejected (line 120 ``<= -> <``)."""
-        from ksma.shared.errors import ValidationError
+        from ksma.shared.errors import ValidationError  # noqa: PLC0415
 
         session = FakeAsyncSession()
         tenant_id = uuid4()
@@ -580,8 +577,8 @@ class TestAddRevision:
                 session,
                 ctx,
                 session_id=sid,
-                starts_at=datetime(2026, 1, 1, 8, 0, tzinfo=timezone.utc),
-                ends_at=datetime(2026, 1, 1, 8, 0, tzinfo=timezone.utc),
+                starts_at=datetime(2026, 1, 1, 8, 0, tzinfo=UTC),
+                ends_at=datetime(2026, 1, 1, 8, 0, tzinfo=UTC),
                 timezone_str="UTC",
                 change_reason="oops",
             )
@@ -593,7 +590,6 @@ class TestAddRevision:
         ``True -> False`` flip on the default still produces a Scheduled
         session with a published revision.
         """
-        from ksma.session.domain.events import SessionScheduled
 
         session = FakeAsyncSession()
         tenant_id = uuid4()
@@ -608,8 +604,8 @@ class TestAddRevision:
             session,
             ctx,
             session_id=sid,
-            starts_at=datetime(2026, 1, 1, 8, 0, tzinfo=timezone.utc),
-            ends_at=datetime(2026, 1, 1, 9, 0, tzinfo=timezone.utc),
+            starts_at=datetime(2026, 1, 1, 8, 0, tzinfo=UTC),
+            ends_at=datetime(2026, 1, 1, 9, 0, tzinfo=UTC),
             timezone_str="UTC",
             change_reason="initial schedule",
         )
@@ -641,8 +637,8 @@ class TestAddRevision:
             session,
             ctx,
             session_id=sid,
-            starts_at=datetime(2026, 1, 1, 8, 0, tzinfo=timezone.utc),
-            ends_at=datetime(2026, 1, 1, 9, 0, tzinfo=timezone.utc),
+            starts_at=datetime(2026, 1, 1, 8, 0, tzinfo=UTC),
+            ends_at=datetime(2026, 1, 1, 9, 0, tzinfo=UTC),
             timezone_str="UTC",
             change_reason="draft",
             make_effective=False,
@@ -710,7 +706,7 @@ class TestPostCancelSession:
 
     async def test_rejects_already_cancelled(self) -> None:
         """Cancelling an already-cancelled session is rejected."""
-        from ksma.shared.errors import StateConflictError
+        from ksma.shared.errors import StateConflictError  # noqa: PLC0415
 
         session = FakeAsyncSession()
         tenant_id = uuid4()
@@ -734,7 +730,7 @@ class TestWriteJournal:
 
     async def test_empty_topic_rejected(self) -> None:
         """An empty topic is a ValidationError (line 259 ``delete not``)."""
-        from ksma.shared.errors import ValidationError
+        from ksma.shared.errors import ValidationError  # noqa: PLC0415
 
         session = FakeAsyncSession()
         tenant_id = uuid4()
@@ -754,7 +750,7 @@ class TestWriteJournal:
 
     async def test_rejects_cancelled_session(self) -> None:
         """A cancelled session does not accept a teaching journal."""
-        from ksma.shared.errors import StateConflictError
+        from ksma.shared.errors import StateConflictError  # noqa: PLC0415
 
         session = FakeAsyncSession()
         tenant_id = uuid4()
@@ -811,7 +807,7 @@ class TestCorrectAttendance:
 
     async def test_empty_correction_reason_rejected(self) -> None:
         """Empty ``correction_reason`` is a ValidationError (line 225 ``delete not``)."""
-        from ksma.shared.errors import ValidationError
+        from ksma.shared.errors import ValidationError  # noqa: PLC0415
 
         session = FakeAsyncSession()
         tenant_id = uuid4()
@@ -832,7 +828,7 @@ class TestCorrectAttendance:
 
     async def test_valid_correction_proceeds(self) -> None:
         """A non-empty correction_reason reaches the UPDATE path."""
-        from ksma.session.domain import AttendanceCode
+        from ksma.session.domain import AttendanceCode  # noqa: PLC0415
 
         session = FakeAsyncSession()
         tenant_id = uuid4()

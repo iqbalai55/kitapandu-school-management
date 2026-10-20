@@ -14,7 +14,7 @@ DB, no FastAPI app, no real ``TenantContext`` instance.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -23,14 +23,12 @@ import pytest
 from ksma.shared.rbac import (
     ROLE_DEFAULT_ACTIONS,
     ActionCode,
-    GrantDecision,
     GrantRow,
     RoleCode,
     Scope,
     Target,
     evaluate,
 )
-
 
 # ---------------------------------------------------------------------------
 # Action registry
@@ -213,7 +211,7 @@ def _make_grant(
         role_code=role,
         action_ids=actions,
         scope=scope,
-        valid_from=valid_from or datetime(2020, 1, 1, tzinfo=timezone.utc),
+        valid_from=valid_from or datetime(2020, 1, 1, tzinfo=UTC),
         valid_until=valid_until,
         status=status,
         policy_id=uuid4(),
@@ -222,7 +220,7 @@ def _make_grant(
 
 @pytest.fixture
 def fixed_now() -> datetime:
-    return datetime(2026, 10, 20, 12, 0, 0, tzinfo=timezone.utc)
+    return datetime(2026, 10, 20, 12, 0, 0, tzinfo=UTC)
 
 
 class TestEvaluateWholeGrant:
@@ -391,7 +389,9 @@ class TestScopeJsonRoundTrip:
         assert Scope.from_json(d) == s
 
     def test_full_round_trip(self) -> None:
-        unit = uuid4(); batch = uuid4(); participant = uuid4()
+        unit = uuid4()
+        batch = uuid4()
+        participant = uuid4()
         s = Scope(
             units=(unit,), batches=(batch,), participants=(participant,),
             exclude_participants=(uuid4(),),
@@ -565,17 +565,14 @@ def test_covers_target_treats_none_target_as_allowed_per_kind(
     scope cover ANY target of this kind?"). Pin this for every kind so
     that an `if X and Y not in Z` → `if X or Y not in Z` flip is caught.
     """
-    if field_name == "columns":
-        s = Scope(columns=("name",))
-    else:
-        s = Scope(**{field_name: (one_id,)})
+    s = Scope(columns=("name",)) if field_name == "columns" else Scope(**{field_name: (one_id,)})
     kwargs = _arg_for_kind(field_name, None)
     # `covers_target` should NOT crash on None and should allow it.
     assert s.covers_target(**kwargs) is True
 
 
 # ---------------------------------------------------------------------------
-# Whole-grant resolver parametrized over action × grant-status.
+# Whole-grant resolver parametrized over action x grant-status.
 #
 # Issue #37 — kill `evaluate` surviving operator mutations. We re-cover the
 # status / validity / action-membership / scope dimensions in a single
@@ -606,7 +603,7 @@ def _make_grant_for_table(
 
 @pytest.fixture
 def base_now() -> datetime:
-    return datetime(2026, 10, 20, 12, 0, 0, tzinfo=timezone.utc)
+    return datetime(2026, 10, 20, 12, 0, 0, tzinfo=UTC)
 
 
 @pytest.fixture

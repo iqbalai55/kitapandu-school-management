@@ -56,7 +56,7 @@ async def write_audit_record(
         authorization_ref = authorization_ref or {
             "kind": "membership",
             "id": str(ctx.membership_id),
-            "role_code": ctx.role_code,
+            "role_code": ctx.primary_role_code,
         }
     row = (
         await session.execute(

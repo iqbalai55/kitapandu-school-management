@@ -40,31 +40,24 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from tests.unit.conftest_helpers import FakeAsyncSession, FakeRow
-
 from ksma.session.domain import (
     Attendance,
     AttendanceCode,
     CompletionDecision,
-    Session,
-    SessionCompletion,
     SessionLifecycleStatus,
-    SessionRevision,
-    TeachingJournal,
 )
 from ksma.session.infrastructure.repositories import (
     AttendanceRepository,
     SessionCompletionRepository,
     SessionRepository,
     SessionRevisionRepository,
-    TeachingJournalRepository,
     _to_attendance,
     _to_completion,
     _to_journal,
     _to_revision,
     _to_session,
 )
-
+from tests.unit.conftest_helpers import FakeAsyncSession, FakeRow
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -436,7 +429,7 @@ class TestAttendanceCorrect:
         Pins the ``if not correction_reason`` guard so a ``delete not``
         flip lets an empty-reason UPDATE through to the attendance row.
         """
-        from ksma.shared.errors import ValidationError
+        from ksma.shared.errors import ValidationError  # noqa: PLC0415
 
         session = FakeAsyncSession()
         tenant_id = uuid4()

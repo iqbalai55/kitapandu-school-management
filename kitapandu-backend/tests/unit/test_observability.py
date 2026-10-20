@@ -253,14 +253,14 @@ class TestNoOpSpanNoState:
     def test_set_attribute_returns_none(self) -> None:
         # The signature claims Any -> None; a `return True` mutation would
         # surface here.
-        from ksma.observability import _NoOpSpan
+        from ksma.observability import _NoOpSpan  # noqa: PLC0415
 
         span = _NoOpSpan()
         result = span.set_attribute("key", "value")
         assert result is None
 
     def test_set_attribute_accepts_arbitrary_types(self) -> None:
-        from ksma.observability import _NoOpSpan
+        from ksma.observability import _NoOpSpan  # noqa: PLC0415
 
         span = _NoOpSpan()
         # Must not raise on common OTel attribute shapes — strings, ints,
@@ -275,7 +275,7 @@ class TestNoOpSpanNoState:
         span.set_attribute("k", [1, 2])
 
     def test_set_status_returns_none(self) -> None:
-        from ksma.observability import _NoOpSpan
+        from ksma.observability import _NoOpSpan  # noqa: PLC0415
 
         span = _NoOpSpan()
         # Accept positional + keyword args (the real OTel API does both).
@@ -283,7 +283,7 @@ class TestNoOpSpanNoState:
         assert span.set_status(status_code="ERROR", description="x") is None
 
     def test_record_exception_returns_none(self) -> None:
-        from ksma.observability import _NoOpSpan
+        from ksma.observability import _NoOpSpan  # noqa: PLC0415
 
         span = _NoOpSpan()
         assert span.record_exception(ValueError("x")) is None
@@ -291,7 +291,7 @@ class TestNoOpSpanNoState:
         assert span.record_exception() is None
 
     def test_end_returns_none(self) -> None:
-        from ksma.observability import _NoOpSpan
+        from ksma.observability import _NoOpSpan  # noqa: PLC0415
 
         span = _NoOpSpan()
         assert span.end() is None
@@ -307,7 +307,7 @@ class TestNoOpTracerConsistency:
     """
 
     def test_start_as_current_span_returns_context_manager(self) -> None:
-        from ksma.observability import _NoOpSpan, _NoOpTracer
+        from ksma.observability import _NoOpTracer  # noqa: PLC0415
 
         tracer = _NoOpTracer()
         cm = tracer.start_as_current_span("unit-test")
@@ -316,7 +316,7 @@ class TestNoOpTracerConsistency:
         assert hasattr(cm, "__exit__")
 
     def test_context_manager_yields_a_no_op_span(self) -> None:
-        from ksma.observability import _NoOpSpan, _NoOpTracer
+        from ksma.observability import _NoOpSpan, _NoOpTracer  # noqa: PLC0415
 
         tracer = _NoOpTracer()
         with tracer.start_as_current_span("unit-test") as span:
@@ -326,16 +326,15 @@ class TestNoOpTracerConsistency:
         # A single shared mutable span would break tests like
         # ``record_exception then start_as_current_span`` — the
         # contract is that each ``with`` block gets a fresh span.
-        from ksma.observability import _NoOpTracer
+        from ksma.observability import _NoOpTracer  # noqa: PLC0415
 
         tracer = _NoOpTracer()
-        with tracer.start_as_current_span("a") as span_a:
-            with tracer.start_as_current_span("b") as span_b:
-                # The inner span is a different object.
-                assert span_a is not span_b
+        with tracer.start_as_current_span("a") as span_a, tracer.start_as_current_span("b") as span_b:
+            # The inner span is a different object.
+            assert span_a is not span_b
 
     def test_start_span_returns_a_no_op_span_directly(self) -> None:
-        from ksma.observability import _NoOpSpan, _NoOpTracer
+        from ksma.observability import _NoOpSpan, _NoOpTracer  # noqa: PLC0415
 
         tracer = _NoOpTracer()
         # ``start_span`` (no context manager) is part of the public
@@ -355,7 +354,7 @@ class TestIsEnabledFlagStable:
     """
 
     def test_is_enabled_returns_bool(self) -> None:
-        from ksma.observability import _is_enabled
+        from ksma.observability import _is_enabled  # noqa: PLC0415
 
         result = _is_enabled()
         assert isinstance(result, bool)
@@ -364,7 +363,7 @@ class TestIsEnabledFlagStable:
         assert result is False
 
     def test_is_enabled_stable_across_calls(self) -> None:
-        from ksma.observability import _is_enabled
+        from ksma.observability import _is_enabled  # noqa: PLC0415
 
         # Two calls in the same test must agree. A cache flip would
         # surface here.

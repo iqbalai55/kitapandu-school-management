@@ -5,7 +5,8 @@ live in integration tests.
 """
 from __future__ import annotations
 
-from uuid import UUID, uuid4
+from dataclasses import FrozenInstanceError
+from uuid import uuid4
 
 import pytest
 
@@ -62,7 +63,7 @@ class TestTenantContextPredicates:
 class TestTenantContextImmutability:
     def test_frozen(self) -> None:
         ctx = _ctx()
-        with pytest.raises(Exception):  # FrozenInstanceError
+        with pytest.raises(FrozenInstanceError):
             ctx.tenant_id = uuid4()  # type: ignore[misc]
 
 
@@ -216,7 +217,7 @@ def test_role_codes_tuple_is_immutable() -> None:
     ctx = _ctx(role_codes=("AC", "FI"))
     assert isinstance(ctx.role_codes, tuple)
     # And a mutation attempt raises — same dataclass is frozen.
-    with pytest.raises(Exception):
+    with pytest.raises(FrozenInstanceError):
         ctx.role_codes = ("AC",)  # type: ignore[misc]
 
 
@@ -230,5 +231,5 @@ def test_tenant_context_is_frozen_dataclass() -> None:
         "account_id", "membership_id", "tenant_id", "unit_id",
         "actor_kind", "authz_revision", "role_codes",
     ):
-        with pytest.raises(Exception):  # FrozenInstanceError
+        with pytest.raises(FrozenInstanceError):
             setattr(ctx, field_name, None)  # type: ignore[misc]

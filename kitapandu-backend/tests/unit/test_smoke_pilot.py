@@ -37,8 +37,8 @@ from ksma.scripts.smoke_pilot import (
     BASE_URL,
     SLUG_VANETA,
     SmokeRecorder,
-    _auth_headers,
     _async_main,
+    _auth_headers,
     _login,
     step_01_login,
     step_03_participants,
@@ -48,7 +48,6 @@ from ksma.scripts.smoke_pilot import (
     step_08_portal_inbox,
     step_09_audit,
 )
-
 
 # ---------------------------------------------------------------------------
 # Settings fixture — seed required env vars so Settings() validates in tests
@@ -68,14 +67,14 @@ def _seed_settings_env(monkeypatch):
     # Defensive — ensure any cached Settings instance is dropped so the
     # patched env vars take effect.
     try:
-        from ksma.settings import get_settings
+        from ksma.settings import get_settings  # noqa: PLC0415
 
         get_settings.cache_clear()
     except Exception:
         pass
     yield
     try:
-        from ksma.settings import get_settings
+        from ksma.settings import get_settings  # noqa: PLC0415
 
         get_settings.cache_clear()
     except Exception:
@@ -850,7 +849,7 @@ class TestStep04Batches:
         with _use_mock_client(lambda req: httpx.Response(500, text="boom")):
             await step_04_batches(rec, ids)
 
-        n, _name, ok, detail = rec.steps[0]
+        _n, _name, ok, detail = rec.steps[0]
         assert ok is False
         assert "status=500" in detail
 
@@ -1305,7 +1304,6 @@ class TestAsyncMain:
 
         async def fake_step_01(*args, **kwargs):
             captured["called"] = True
-            return None
 
         # Capture the SmokeRecorder instance _async_main creates.
         original_SmokeRecorder = smoke_pilot_mod.SmokeRecorder

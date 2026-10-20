@@ -314,7 +314,11 @@ class _SqlCollector:
 
     # -- walking ----------------------------------------------------------
 
-    def _capture(self, body: list[ast.stmt]) -> None:
+    def _capture(self, body: list[ast.stmt]) -> None:  # noqa: PLR0912
+        # Many isinstance guards: this is an AST walker dispatching on every
+        # node shape the mocked Alembic ``upgrade()``/``downgrade()`` could
+        # emit. Splitting into per-node-type helpers would scatter the env
+        # mutation logic and obscure the capture flow.
         for stmt in body:
             # ``x = [...]`` (list/tuple of strings) at module or block level.
             info = _assign_value(stmt)
@@ -753,13 +757,19 @@ class TestPortalOperationsDowngrade:
                 f"{ast.unparse(inner)!r}"
             )
 
-    def test_downgrade_table_drop_loop_iterates_rls_tables_in_reverse(
+    def test_downgrade_table_drop_loop_iterates_rls_tables_in_reverse(  # noqa: PLR0912
         self,
     ) -> None:
         """The actual ``op.execute(f"DROP TABLE IF EXISTS {tbl} CASCADE")``
         statement lives inside ``for tbl in rls_tables[::-1]:``. A mutation
         to either operand of that slice would break the iteration at
-        runtime."""
+        runtime.
+
+        The method walks the AST with a sequence of narrow ``isinstance``
+        guards; each guard is a single matched shape and the body is one
+        short branch. Lifting any of them into helpers would force the
+        reader to track both call stack and early-``continue`` flow, which
+        is more error-prone than the inline ladder."""
         module = _load_module(PORTAL_OPS)
         downgrade = _find_func(module, "downgrade")
 

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from typing import Annotated, Any
+from uuid import UUID
 
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer

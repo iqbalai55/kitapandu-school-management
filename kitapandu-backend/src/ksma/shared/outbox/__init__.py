@@ -20,6 +20,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from ksma.shared.events import DomainEvent, bus
 from ksma.shared.persistence import session_scope

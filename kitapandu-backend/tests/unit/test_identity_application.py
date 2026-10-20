@@ -16,40 +16,34 @@ Surviving mutants (baseline scan): 53 sites across ``login`` (10),
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+import contextlib
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import patch
 from uuid import UUID, uuid4
 
 import pytest
 from pydantic import SecretStr
-from sqlalchemy import select
 from sqlalchemy.sql import Select
 
+from ksma.identity.application import _hash_refresh
 from ksma.identity.domain import (
     AccountStatus,
     MembershipStatus,
 )
 from ksma.identity.infrastructure.models import (
-    AccountRow,
-    AccessAssignmentRow,
-    MembershipRow,
     RefreshTokenRow,
-    RecoveryTokenRow,
-    ServicePrincipalRow,
 )
+from ksma.settings import Settings
 from ksma.shared.auth import hash_password
-from ksma.identity.application import _hash_refresh
-from ksma.shared.time import clock as _clock
 from ksma.shared.errors import (
     AuthenticationError,
     InvalidCredentialsError,
     ValidationError,
 )
 from ksma.shared.time import FrozenClock, reset_clock, set_clock
-from ksma.settings import Settings
+from ksma.shared.time import clock as _clock
 from tests.unit.conftest_helpers import FakeAsyncSession, FakeResult, FakeRow, SessionCall
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -59,7 +53,7 @@ from tests.unit.conftest_helpers import FakeAsyncSession, FakeResult, FakeRow, S
 @pytest.fixture(autouse=True)
 def _fixed_settings() -> Any:
     """Patch ``get_settings`` so JWT issuance works without a real env."""
-    from ksma.settings import get_settings as _real_get_settings
+    from ksma.settings import get_settings as _real_get_settings  # noqa: PLC0415
 
     test_settings = Settings(
         env="test",
@@ -91,7 +85,7 @@ def _fixed_settings() -> Any:
 @pytest.fixture(autouse=True)
 def _reset_clock() -> Any:
     """Reset the process clock between tests so time-dependent mutants are stable."""
-    fixed = datetime(2030, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    fixed = datetime(2030, 1, 1, 12, 0, 0, tzinfo=UTC)
     set_clock(FrozenClock(fixed))
     yield fixed
     reset_clock()
@@ -115,10 +109,8 @@ def _fake_row_setattr() -> Any:
     if original is not None:
         FakeRow.__setattr__ = original  # type: ignore[attr-defined]
     else:  # pragma: no cover - defensive
-        try:
+        with contextlib.suppress(AttributeError):
             del FakeRow.__setattr__
-        except AttributeError:
-            pass
 
 
 # ---------------------------------------------------------------------------
@@ -238,7 +230,7 @@ def _seed_membership(
         "tenant_id": tenant_id,
         "account_id": account_id,
         "status": status.value,
-        "valid_from": datetime.now(timezone.utc),
+        "valid_from": datetime.now(UTC),
         "valid_until": None,
         "invitation_ref": None,
         "revocation": None,
@@ -273,8 +265,8 @@ def _seed_refresh_token(
             "account_id": account_id or uuid4(),
             "membership_id": membership_id or uuid4(),
             "token_hash": token_hash,
-            "issued_at": datetime.now(timezone.utc) - timedelta(days=1),
-            "expires_at": expires_at or (datetime.now(timezone.utc) + timedelta(days=7)),
+            "issued_at": datetime.now(UTC) - timedelta(days=1),
+            "expires_at": expires_at or (datetime.now(UTC) + timedelta(days=7)),
             "revoked_at": revoked_at,
             "revoked_reason": None,
             "replaced_by_id": None,
@@ -300,8 +292,8 @@ def _seed_recovery_token(
             "account_id": account_id or uuid4(),
             "token_hash": token_hash,
             "purpose": "password_recover",
-            "issued_at": datetime.now(timezone.utc),
-            "expires_at": expires_at or (datetime.now(timezone.utc) + timedelta(hours=1)),
+            "issued_at": datetime.now(UTC),
+            "expires_at": expires_at or (datetime.now(UTC) + timedelta(hours=1)),
             "consumed_at": consumed_at,
             "consumed_ip": None,
         },
@@ -340,7 +332,7 @@ class TestLogin:
 
     async def test_unknown_account_raises(self) -> None:
         """Kills the ``== -> !=`` mutants on lines 431 and 432 (auth namespace / subject)."""
-        from ksma.identity.application import login
+        from ksma.identity.application import login  # noqa: PLC0415
 
         session = _IdentitySession()
         with pytest.raises(InvalidCredentialsError):
@@ -351,7 +343,7 @@ class TestLogin:
 
     async def test_wrong_password_raises(self) -> None:
         """Kills the ``or -> and`` and ``delete not`` mutants on line 436."""
-        from ksma.identity.application import login
+        from ksma.identity.application import login  # noqa: PLC0415
 
         session = _IdentitySession()
         _seed_account(session, auth_subject="alice", password="right")
@@ -360,7 +352,7 @@ class TestLogin:
 
     async def test_account_with_no_password_hash_raises(self) -> None:
         """Same line 436 — short-circuit chain treats missing hash as invalid."""
-        from ksma.identity.application import login
+        from ksma.identity.application import login  # noqa: PLC0415
 
         session = _IdentitySession()
         _seed_account(session, auth_subject="alice", password=None)
@@ -369,7 +361,7 @@ class TestLogin:
 
     async def test_disabled_account_raises(self) -> None:
         """Kills the ``!= -> ==`` mutant on line 438 (status check)."""
-        from ksma.identity.application import login
+        from ksma.identity.application import login  # noqa: PLC0415
 
         session = _IdentitySession()
         _seed_account(session, status=AccountStatus.DISABLED, password="secret")
@@ -378,7 +370,7 @@ class TestLogin:
 
     async def test_pending_account_raises(self) -> None:
         """Same line 438 — pending status must also reject."""
-        from ksma.identity.application import login
+        from ksma.identity.application import login  # noqa: PLC0415
 
         session = _IdentitySession()
         _seed_account(session, status=AccountStatus.PENDING, password="secret")
@@ -387,7 +379,7 @@ class TestLogin:
 
     async def test_no_active_membership_raises(self) -> None:
         """Kills ``== -> !=`` mutants on lines 443 and 444 (membership lookup)."""
-        from ksma.identity.application import login
+        from ksma.identity.application import login  # noqa: PLC0415
 
         session = _IdentitySession()
         _seed_account(session, auth_subject="alice", password="secret")
@@ -396,7 +388,7 @@ class TestLogin:
 
     async def test_tenant_id_filters_membership(self) -> None:
         """Kills ``== -> !=`` mutant on line 447 (explicit tenant_id filter)."""
-        from ksma.identity.application import login
+        from ksma.identity.application import login  # noqa: PLC0415
 
         aid = _seed_account(session := _IdentitySession(), auth_subject="alice", password="secret")
         # Seed an active membership for a DIFFERENT tenant; login must fail because
@@ -410,7 +402,7 @@ class TestLogin:
 
     async def test_issues_refresh_token_with_seven_day_expiry(self) -> None:
         """Kills the ``+ -> -`` mutant on line 469 (refresh-token expiry = now + 7 days)."""
-        from ksma.identity.application import login
+        from ksma.identity.application import login  # noqa: PLC0415
 
         aid = _seed_account(session := _IdentitySession(), auth_subject="alice", password="secret")
         _seed_membership(session, account_id=aid)
@@ -421,7 +413,7 @@ class TestLogin:
         new_rt = next(a for a in adds if isinstance(a, RefreshTokenRow))
         # The source writes the row with `expires_at = now + 7 days`; the
         # flipped ``+ -> -`` mutant would write `now - 7 days` (already expired).
-        assert new_rt.expires_at > datetime.now(timezone.utc), (
+        assert new_rt.expires_at > datetime.now(UTC), (
             f"refresh-token expiry not in the future: {new_rt.expires_at!r}"
         )
 
@@ -435,7 +427,7 @@ class TestRefresh:
     """Pin the operator flips in ``refresh()`` — 5 surviving mutants."""
 
     async def test_unknown_token_raises(self) -> None:
-        from ksma.identity.application import refresh
+        from ksma.identity.application import refresh  # noqa: PLC0415
 
         session = _IdentitySession()
         with pytest.raises(InvalidCredentialsError):
@@ -443,12 +435,12 @@ class TestRefresh:
 
     async def test_revoked_token_raises(self) -> None:
         """Kills the ``== -> !=`` mutant on line 485 (revoked_at is not None)."""
-        from ksma.identity.application import refresh
+        from ksma.identity.application import refresh  # noqa: PLC0415
 
         session = _IdentitySession()
         _seed_refresh_token(
             session, token_hash=_hash_refresh("r"),
-            revoked_at=datetime.now(timezone.utc),
+            revoked_at=datetime.now(UTC),
             expires_at=_clock().now() + timedelta(days=7),
         )
         with pytest.raises(AuthenticationError):
@@ -460,7 +452,7 @@ class TestRefresh:
         With ``expires_at == clock().now()`` exactly, ``<`` says "not
         expired" while ``<=`` says "expired". Pin the strict ``<``.
         """
-        from ksma.identity.application import refresh
+        from ksma.identity.application import refresh  # noqa: PLC0415
 
         session = _IdentitySession()
         aid = _seed_account(session)
@@ -476,7 +468,7 @@ class TestRefresh:
 
     async def test_new_refresh_token_has_seven_day_expiry(self) -> None:
         """Kills the ``+ -> -`` mutant on line 506 (new token = now + 7 days)."""
-        from ksma.identity.application import refresh
+        from ksma.identity.application import refresh  # noqa: PLC0415
 
         aid = _seed_account(session := _IdentitySession())
         mid = _seed_membership(session, account_id=aid)
@@ -497,7 +489,7 @@ class TestRefresh:
 
     async def test_refresh_with_unknown_account_raises(self) -> None:
         """Kills the ``== -> !=`` mutant on line 514 (AccountRow.id == rt.account_id)."""
-        from ksma.identity.application import refresh
+        from ksma.identity.application import refresh  # noqa: PLC0415
 
         session = _IdentitySession()
         # Seed a refresh token whose account_id is unseeded, so the
@@ -508,19 +500,22 @@ class TestRefresh:
             revoked_at=None,
             expires_at=_clock().now() + timedelta(days=7),
         )
-        with pytest.raises(Exception):
+        # Token hash "h" doesn't match the SHA-256 of "r", so ``refresh``
+        # raises ``InvalidCredentialsError("Invalid refresh token")`` at
+        # the token-lookup step *before* any account/membership lookup.
+        with pytest.raises(InvalidCredentialsError):
             await refresh(session, refresh_raw="r")
 
     async def test_refresh_with_unknown_membership_raises(self) -> None:
         """Kills the ``== -> !=`` mutant on line 518 (MembershipRow.id == rt.membership_id)."""
-        from ksma.identity.application import refresh
+        from ksma.identity.application import refresh  # noqa: PLC0415
 
         session = _IdentitySession()
         aid = _seed_account(session := _IdentitySession())
         # Seed a refresh token whose membership_id is unseeded. The seed
         # also includes a *different* membership row so the flipped
         # ``id != rt.membership_id`` would return it instead of raising.
-        other_mid = uuid4()
+        uuid4()  # discarded — see F841 below
         rt_mid = uuid4()
         _seed_membership(session, account_id=aid)
         _seed_refresh_token(
@@ -528,7 +523,12 @@ class TestRefresh:
             membership_id=rt_mid, revoked_at=None,
             expires_at=_clock().now() + timedelta(days=7),
         )
-        with pytest.raises(Exception):
+        # The fake session's ``scalar_one`` asserts ``len(rows) == 1``,
+        # so a missing lookup raises ``AssertionError`` rather than the
+        # SQLAlchemy ``NoResultFound`` we'd see against real Postgres.
+        # Pin the contract any-mismatch-fails: a flipped `==` would
+        # match the other row and return instead.
+        with pytest.raises(Exception):  # noqa: B017  # fake-session AssertionError covers the missing-row branch
             await refresh(session, refresh_raw="r")
 
 
@@ -541,7 +541,7 @@ class TestCompleteRecovery:
     """Pin the operator flips in ``complete_recovery()`` — 6 surviving mutants."""
 
     async def test_unknown_token_raises(self) -> None:
-        from ksma.identity.application import complete_recovery
+        from ksma.identity.application import complete_recovery  # noqa: PLC0415
 
         session = _IdentitySession()
         with pytest.raises(AuthenticationError):
@@ -549,12 +549,12 @@ class TestCompleteRecovery:
 
     async def test_consumed_token_raises(self) -> None:
         """Kills the ``== -> !=`` mutant on line 560 (consumed_at is not None)."""
-        from ksma.identity.application import complete_recovery
+        from ksma.identity.application import complete_recovery  # noqa: PLC0415
 
         session = _IdentitySession()
         _seed_recovery_token(
             session, token_hash=_hash_refresh("r"),
-            consumed_at=datetime.now(timezone.utc),
+            consumed_at=datetime.now(UTC),
             expires_at=_clock().now() + timedelta(hours=1),
         )
         with pytest.raises(AuthenticationError):
@@ -567,7 +567,7 @@ class TestCompleteRecovery:
         expired" while ``<=`` says "expired". Pin the strict ``<`` by
         asserting the function proceeds past the time check.
         """
-        from ksma.identity.application import complete_recovery
+        from ksma.identity.application import complete_recovery  # noqa: PLC0415
 
         session = _IdentitySession()
         # Seed an Account too so the post-check AccountRow query does not
@@ -595,7 +595,7 @@ class TestActivateMembership:
 
     async def test_unknown_membership_raises(self) -> None:
         """Kills the ``== -> !=`` mutant on line 252 (MembershipRow.id == membership_id)."""
-        from ksma.identity.application import activate_membership
+        from ksma.identity.application import activate_membership  # noqa: PLC0415
 
         session = _IdentitySession()
         with pytest.raises(ValidationError):
@@ -603,7 +603,7 @@ class TestActivateMembership:
 
     async def test_successful_activation_increments_authz_revision(self) -> None:
         """Kills the ``== -> !=`` on line 261 and the ``1 -> 0`` mutants on lines 258 / 263."""
-        from ksma.identity.application import activate_membership
+        from ksma.identity.application import activate_membership  # noqa: PLC0415
 
         session = _IdentitySession()
         aid = _seed_account(session, authz_revision=1)
@@ -634,10 +634,13 @@ class TestGrantAccess:
 
     async def test_unknown_membership_raises(self) -> None:
         """Kills the ``== -> !=`` mutant on line 334 (MembershipRow.id == membership_id)."""
-        from ksma.identity.application import grant_access
+        from ksma.identity.application import grant_access  # noqa: PLC0415
 
         session = _IdentitySession()
-        with pytest.raises(Exception):
+        # Same fake-session caveat as test_refresh_with_unknown_membership_raises:
+        # missing membership lookup yields AssertionError from the fake's
+        # ``scalar_one``, not a SQLAlchemy NoResultFound.
+        with pytest.raises(Exception):  # noqa: B017  # fake-session AssertionError covers the missing-row branch
             await grant_access(
                 session,
                 tenant_id=uuid4(),
@@ -651,7 +654,7 @@ class TestGrantAccess:
 
     async def test_successful_grant_increments_authz_revision(self) -> None:
         """Kills the ``or -> and`` mutant on line 323 and the ``1 -> 0`` mutant on line 340."""
-        from ksma.identity.application import grant_access
+        from ksma.identity.application import grant_access  # noqa: PLC0415
 
         session = _IdentitySession()
         aid = _seed_account(session, authz_revision=1)
@@ -683,7 +686,7 @@ class TestRevokeAccess:
 
     async def test_unknown_assignment_raises(self) -> None:
         """Kills the ``== -> !=`` mutant on line 353 (AccessAssignmentRow.id == assignment_id)."""
-        from ksma.identity.application import revoke_access
+        from ksma.identity.application import revoke_access  # noqa: PLC0415
 
         session = _IdentitySession()
         with pytest.raises(ValidationError):
@@ -691,7 +694,7 @@ class TestRevokeAccess:
 
     async def test_successful_revoke_increments_authz_revision(self) -> None:
         """Kills the ``== -> !=`` mutants on lines 363/367 and ``1 -> 0`` on line 369."""
-        from ksma.identity.application import revoke_access
+        from ksma.identity.application import revoke_access  # noqa: PLC0415
 
         session = _IdentitySession()
         aid = _seed_account(session, authz_revision=1)
@@ -738,7 +741,7 @@ class TestRevokeMembership:
 
     async def test_unknown_membership_raises(self) -> None:
         """Kills the ``== -> !=`` mutant on line 277 (MembershipRow.id == membership_id)."""
-        from ksma.identity.application import revoke_membership
+        from ksma.identity.application import revoke_membership  # noqa: PLC0415
 
         session = _IdentitySession()
         with pytest.raises(ValidationError):
@@ -746,7 +749,7 @@ class TestRevokeMembership:
 
     async def test_successful_revoke_increments_authz_revision(self) -> None:
         """Kills the ``== -> !=`` mutant on line 285 and ``1 -> 0`` on line 287."""
-        from ksma.identity.application import revoke_membership
+        from ksma.identity.application import revoke_membership  # noqa: PLC0415
 
         session = _IdentitySession()
         aid = _seed_account(session, authz_revision=1)
@@ -770,7 +773,7 @@ class TestIssueServiceToken:
 
     async def test_unknown_sp_raises(self) -> None:
         """Kills the ``== -> !=`` mutant on line 592 (principal_code lookup)."""
-        from ksma.identity.application import issue_service_token
+        from ksma.identity.application import issue_service_token  # noqa: PLC0415
 
         session = _IdentitySession()
         with pytest.raises(AuthenticationError):
@@ -778,7 +781,7 @@ class TestIssueServiceToken:
 
     async def test_disabled_sp_raises(self) -> None:
         """Kills the ``or -> and`` mutants on line 595 and ``== -> !=`` on line 599."""
-        from ksma.identity.application import issue_service_token
+        from ksma.identity.application import issue_service_token  # noqa: PLC0415
 
         session = _IdentitySession()
         _seed_service_principal(session, code="x", status="disabled")
@@ -796,7 +799,7 @@ class TestStartRecovery:
 
     async def test_unknown_account_returns_fake_token(self) -> None:
         """Kills the ``== -> !=`` mutant on line 622 and the ``or -> and`` on line 625."""
-        from ksma.identity.application import start_recovery
+        from ksma.identity.application import start_recovery  # noqa: PLC0415
 
         session = _IdentitySession()
         token = await start_recovery(session, auth_subject="nobody")
@@ -806,7 +809,7 @@ class TestStartRecovery:
 
     async def test_new_recovery_token_has_one_hour_expiry(self) -> None:
         """Kills the ``+ -> -`` and ``1 -> 0`` mutants on line 636 (timedelta(hours=1))."""
-        from ksma.identity.application import start_recovery
+        from ksma.identity.application import start_recovery  # noqa: PLC0415
 
         session = _IdentitySession()
         _seed_account(session, auth_subject="alice")
@@ -833,7 +836,7 @@ class TestChangePassword:
 
     async def test_unknown_account_raises(self) -> None:
         """Kills the ``== -> !=`` mutant on line 207 (AccountRow.id == account_id)."""
-        from ksma.identity.application import change_password
+        from ksma.identity.application import change_password  # noqa: PLC0415
 
         session = _IdentitySession()
         with pytest.raises(ValidationError):
@@ -841,7 +844,7 @@ class TestChangePassword:
 
     async def test_successful_change_increments_authz_revision(self) -> None:
         """Kills the ``1 -> 0`` mutant on line 212 (authz_revision += 1)."""
-        from ksma.identity.application import change_password
+        from ksma.identity.application import change_password  # noqa: PLC0415
 
         session = _IdentitySession()
         aid = _seed_account(session, authz_revision=1)
@@ -863,7 +866,7 @@ class TestActivateAccount:
 
     async def test_unknown_account_raises(self) -> None:
         """Kills the ``== -> !=`` mutant on line 188 (AccountRow.id == account_id)."""
-        from ksma.identity.application import activate_account
+        from ksma.identity.application import activate_account  # noqa: PLC0415
 
         session = _IdentitySession()
         with pytest.raises(ValidationError):
@@ -871,7 +874,7 @@ class TestActivateAccount:
 
     async def test_successful_activation_increments_authz_revision(self) -> None:
         """Kills the ``1 -> 0`` mutant on line 194 (authz_revision += 1)."""
-        from ksma.identity.application import activate_account
+        from ksma.identity.application import activate_account  # noqa: PLC0415
 
         session = _IdentitySession()
         aid = _seed_account(session, status=AccountStatus.PENDING, authz_revision=1)
@@ -896,7 +899,7 @@ class TestLogout:
 
     async def test_unknown_token_returns_without_error(self) -> None:
         """Kills the ``== -> !=`` mutant on line 540 (``if rt is None:``)."""
-        from ksma.identity.application import logout
+        from ksma.identity.application import logout  # noqa: PLC0415
 
         session = _IdentitySession()
         # No refresh token seeded → original returns silently; the flipped
@@ -915,7 +918,7 @@ class TestPublishPolicy:
 
     async def test_publish_policy_with_no_expiry_uses_clock(self) -> None:
         """Kills the ``or -> and`` mutant on line 401 (approval fallback)."""
-        from ksma.identity.application import publish_policy
+        from ksma.identity.application import publish_policy  # noqa: PLC0415
 
         session = _IdentitySession()
         pv = await publish_policy(
@@ -944,7 +947,7 @@ class TestCreateEducationUnit:
 
     async def test_default_status_is_active(self) -> None:
         """Kills the ``or -> and`` mutant on line 137 (default ACTIVE status)."""
-        from ksma.identity.application import create_education_unit
+        from ksma.identity.application import create_education_unit  # noqa: PLC0415
 
         session = _IdentitySession()
         await create_education_unit(
@@ -976,7 +979,7 @@ class TestActivateTenant:
 
     async def test_unknown_tenant_raises(self) -> None:
         """Kills the ``== -> !=`` mutant on line 102 (TenantRow.id == tenant_id)."""
-        from ksma.identity.application import activate_tenant
+        from ksma.identity.application import activate_tenant  # noqa: PLC0415
 
         session = _IdentitySession()
         with pytest.raises(ValidationError):

@@ -6,10 +6,12 @@ configured. The HTTP layer is covered by tests/integration/test_admin_token.py.
 """
 from __future__ import annotations
 
+import hmac as _hmac
 import logging
 
 import pytest
 
+from ksma.shared.auth import admin_token as _admin_token_mod
 from ksma.shared.auth.admin_token import (
     ADMIN_PATH_PREFIX,
     AdminTokenPolicy,
@@ -101,26 +103,22 @@ def test_is_authorized_wrong_token_returns_false() -> None:
 
 def test_is_authorized_uses_compare_digest(monkeypatch: pytest.MonkeyPatch) -> None:
     """Guard rail: the equality check must stay hmac.compare_digest."""
-    import ksma.shared.auth.admin_token as mod
-
     calls: list[tuple[str, str]] = []
-    real = mod.hmac.compare_digest
+    real = _admin_token_mod.hmac.compare_digest
 
     def spy(a: str, b: str) -> bool:  # type: ignore[no-untyped-def]
         calls.append((a, b))
         return real(a, b)
 
-    monkeypatch.setattr(mod.hmac, "compare_digest", spy)
+    monkeypatch.setattr(_admin_token_mod.hmac, "compare_digest", spy)
     assert is_authorized(CONFIGURED, "Bearer s3cr3t-admin-token") is True
     assert calls == [("s3cr3t-admin-token", "s3cr3t-admin-token")]
 
 
 def test_compare_digest_raises_on_mixed_types() -> None:
     """compare_digest refuses str/bytes mixes — headers are always str here."""
-    import hmac
-
     with pytest.raises(TypeError):
-        hmac.compare_digest(b"abc", "abc")  # type: ignore[arg-type]
+        _hmac.compare_digest(b"abc", "abc")  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------
@@ -229,16 +227,14 @@ class TestCompareDigestAlwaysInvoked:
     def test_constant_time_compare_runs_even_for_same_length(self, monkeypatch) -> None:
         # An `==` short-circuit mutation would NOT call compare_digest; the
         # spy below would record zero calls.
-        import ksma.shared.auth.admin_token as mod
-
         calls: list[tuple[str, str]] = []
-        real = mod.hmac.compare_digest
+        real = _admin_token_mod.hmac.compare_digest
 
         def spy(a: str, b: str) -> bool:
             calls.append((a, b))
             return real(a, b)
 
-        monkeypatch.setattr(mod.hmac, "compare_digest", spy)
+        monkeypatch.setattr(_admin_token_mod.hmac, "compare_digest", spy)
         # Same-length, different bytes — classic constant-time probe.
         is_authorized(CONFIGURED, "Bearer WRONG-admin-token")
         assert len(calls) == 1
@@ -253,16 +249,14 @@ class TestCompareDigestAlwaysInvoked:
         # *not* a secret-dependent compare. compare_digest MUST run for any
         # length mismatch too. A `return False` early-exit mutation would
         # miss this.
-        import ksma.shared.auth.admin_token as mod
-
         calls: list[tuple[str, str]] = []
-        real = mod.hmac.compare_digest
+        real = _admin_token_mod.hmac.compare_digest
 
         def spy(a: str, b: str) -> bool:
             calls.append((a, b))
             return real(a, b)
 
-        monkeypatch.setattr(mod.hmac, "compare_digest", spy)
+        monkeypatch.setattr(_admin_token_mod.hmac, "compare_digest", spy)
         is_authorized(CONFIGURED, "Bearer s3cr3t")  # shorter
         assert len(calls) == 1
         is_authorized(CONFIGURED, "Bearer s3cr3t-admin-token-extra")  # longer
