@@ -7,10 +7,7 @@ into a domain-shaped assertion.
 """
 from __future__ import annotations
 
-import inspect
 import re
-import shutil
-import subprocess
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
@@ -589,7 +586,7 @@ class FakeTenantContext:
     def build(self) -> TenantContext:
         """Build the frozen value object, applying the actor-kind invariants."""
         is_account = self._actor_kind is ActorKind.ACCOUNT
-        role_codes = (_code_of(self._role), *(_code_of(role) for role in self._extra_roles))
+        role_codes = (_code_of(self._role),) + tuple(_code_of(role) for role in self._extra_roles)
         return TenantContext(
             account_id=(self._account_id if self._account_id is not None else uuid4())
             if is_account
@@ -624,11 +621,8 @@ def tenant_context(role: RoleCode | str = RoleCode.AC, **overrides: Any) -> Tena
     return FakeTenantContext(role, **overrides).build()
 
 
-def _slug(value: Any) -> str:  # noqa: PLR0911
+def _slug(value: Any) -> str:
     """The canonical table-cell name for one boundary value."""
-    # The dispatch ladder is intentionally flat — collapsing branches would
-    # re-create the type-discrimination in a less readable form (e.g. a
-    # dict keyed on type). Each ``return`` covers a distinct leaf type.
     if value is None:
         return "none"
     if isinstance(value, bool):
@@ -645,41 +639,6 @@ def _slug(value: Any) -> str:  # noqa: PLR0911
         cleaned = re.sub(r"[^0-9a-zA-Z]+", "_", value).strip("_").lower()
         return cleaned or "empty"
     return re.sub(r"[^0-9a-zA-Z]+", "_", type(value).__name__).strip("_").lower()
-    if value is None:
-        return "none"
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, Enum):
-        # Enum cells keep their wire spelling: RoleCode.OW -> "OW", not "ow".
-        member = value.value
-        if isinstance(member, str):
-            return re.sub(r"[^0-9a-zA-Z]+", "_", member).strip("_") or "empty"
-        return _slug(member)
-    if isinstance(value, (int, float)):
-        return str(value)
-    if isinstance(value, str):
-        cleaned = re.sub(r"[^0-9a-zA-Z]+", "_", value).strip("_").lower()
-        return cleaned or "empty"
-    return re.sub(r"[^0-9a-zA-Z]+", "_", type(value).__name__).strip("_").lower()
-
-
-def boundary_ids(
-    values: Iterable[Any], idfn: Callable[[Any], str] | None = None
-) -> list[str]:
-    """Canonical, unique pytest ids for a boundary table.
-
-    ``RoleCode.OW`` -> ``OW``, ``True`` -> ``true``, ``None`` -> ``none``,
-    ``-1`` -> ``-1``, ``"draft status"`` -> ``draft_status``. Repeated cells
-    get a ``_2`` / ``_3`` suffix so pytest never collapses two rows of the
-    table into one node.
-    """
-    ids: list[str] = []
-    seen: dict[str, int] = {}
-    for value in values:
-        base = idfn(value) if idfn is not None else _slug(value)
-        seen[base] = seen.get(base, 0) + 1
-        ids.append(base if seen[base] == 1 else f"{base}_{seen[base]}")
-    return ids
 
 
 def parametrize_boundary(
@@ -692,99 +651,26 @@ def parametrize_boundary(
 
     One mutation per failing operator per table row is the goal, so the test
     id has to name the cell: ``test_scale[OW]`` rather than ``test_scale[0]``.
+    ``RoleCode.OW`` -> ``OW``, ``True`` -> ``true``, ``None`` -> ``none``,
+    ``-1`` -> ``-1``, ``"draft status"`` -> ``draft_status``. Repeated cells
+    get a ``_2`` / ``_3`` suffix so pytest never collapses two rows of the
+    table into one node.
 
         @parametrize_boundary([RoleCode.OW, RoleCode.AC], argname="role")
         def test_role_is_in_the_context(role): ...
     """
     cells = list(values)
+    ids: list[str] = []
+    seen: dict[str, int] = {}
+    for value in cells:
+        base = idfn(value) if idfn is not None else _slug(value)
+        seen[base] = seen.get(base, 0) + 1
+        ids.append(base if seen[base] == 1 else f"{base}_{seen[base]}")
 
     def decorate(test: Callable[..., Any]) -> Callable[..., Any]:
-        return pytest.mark.parametrize(argname, cells, ids=boundary_ids(cells, idfn))(test)
+        return pytest.mark.parametrize(argname, cells, ids=ids)(test)
 
     return decorate
-
-
-_VERDICT_RE = re.compile(r"^(KILLED|SURVIVED)\s+(\S+):(\d+)\s+(.*\S)\s*$")
-
-
-@dataclass(frozen=True, slots=True)
-class MutantOutcome:
-    """One ``KILLED``/``SURVIVED`` line from a mutator run."""
-
-    path: str
-    line: int
-    mutation: str
-    verdict: str
-
-    @property
-    def killed(self) -> bool:
-        return self.verdict == "killed"
-
-
-@dataclass(frozen=True, slots=True)
-class MutatorRun:
-    """The exit status and combined output of one ``mutator`` invocation."""
-
-    exit_code: int
-    output: str
-
-
-def parse_mutator_output(output: str) -> list[MutantOutcome]:
-    """Pull the per-mutant verdicts out of mutator's stdout.
-
-    Only ``KILLED``/``SURVIVED`` lines are read; the trailing function/score
-    table is not a verdict and is ignored.
-    """
-    outcomes: list[MutantOutcome] = []
-    for line in output.splitlines():
-        found = _VERDICT_RE.match(line.strip())
-        if found is None:
-            continue
-        verdict, path, line_no, mutation = found.groups()
-        outcomes.append(
-            MutantOutcome(
-                path=path, line=int(line_no), mutation=mutation, verdict=verdict.lower()
-            )
-        )
-    return outcomes
-
-
-def mutator_command(
-    *, root: str, source: str, line: int, test_command: str
-) -> list[str]:
-    """The mutator invocation that re-runs exactly one mutation site.
-
-    ``--mutate-all`` is what makes this a gate rather than a report: without
-    it a site the previous snapshot already killed is trusted instead of
-    re-executed.
-    """
-    return [
-        "mutator",
-        "--root",
-        str(root),
-        str(source),
-        "--lines",
-        str(line),
-        "--test-command",
-        test_command,
-        "--mutate-all",
-        "--no-coverage",
-        "--max-workers",
-        "1",
-    ]
-
-
-def run_mutator(command: list[str], *, timeout: float | None = None) -> MutatorRun:
-    """Run ``mutator`` and capture its verdict lines."""
-    if shutil.which(command[0]) is None:
-        raise RuntimeError(
-            f"{command[0]!r} is not on PATH; install the mutation toolchain before "
-            "gating a function with assert_function_killed"
-        )
-    completed = subprocess.run(
-        command, capture_output=True, text=True, timeout=timeout, check=False
-    )
-    return MutatorRun(exit_code=completed.returncode, output=completed.stdout + completed.stderr)
 
 
 def project_root(start: Path | None = None) -> Path:
@@ -794,89 +680,3 @@ def project_root(start: Path | None = None) -> Path:
         if candidate.name == "kitapandu-backend" and candidate.is_dir():
             return candidate.parent
     return backend
-
-
-def _normalise_mutation(mutation: str) -> str:
-    """``"+->-"`` and ``"+ -> -"`` name the same flip."""
-    return re.sub(r"\s+", "", mutation)
-
-
-def _test_command(fixture: Any, source: str) -> str:
-    """The ``--test-command`` for the mutated run.
-
-    ``fixture`` is the pytest fixture (or any zero-argument callable) that
-    supplies the command; a plain string is accepted for one-off use.
-    """
-    if callable(fixture):
-        command = fixture()
-        if not isinstance(command, str):
-            raise TypeError(
-                f"fixture {fixture!r} must return the test command as a str, "
-                f"got {type(command).__name__}"
-            )
-        return command
-    if isinstance(fixture, str):
-        return fixture
-    raise TypeError(f"fixture must be a str or a callable returning a str, got {fixture!r}")
-
-
-def assert_function_killed(
-    fn: Callable[..., Any],
-    *,
-    line: int,
-    mutation: str,
-    fixture: Any,
-    runner: Callable[[list[str]], MutatorRun] | None = None,
-    root: Path | None = None,
-    timeout: float | None = None,
-) -> MutantOutcome:
-    """Gate one function: mutate ``line`` and require the flip to be killed.
-
-    ``fn`` locates the source file, ``line``/``mutation`` name the operator
-    site (``"1 -> 0"``, ``"and -> or"``, ``"delete not"``), and ``fixture``
-    supplies the pytest command mutator runs. Returns the passing
-    :class:`MutantOutcome`; raises ``AssertionError`` when the mutant
-    survived, when the site never ran, or when the baseline itself is red.
-    """
-    repo_root = Path(root) if root is not None else project_root()
-    source_file = inspect.getsourcefile(fn)
-    if source_file is None:
-        raise AssertionError(f"cannot locate the source file of {fn!r}")
-    source = Path(source_file).resolve()
-    try:
-        relative_source = str(source.relative_to(repo_root))
-    except ValueError:  # pragma: no cover - source outside the repo root
-        relative_source = str(source)
-
-    command = mutator_command(
-        root=str(repo_root),
-        source=relative_source,
-        line=line,
-        test_command=_test_command(fixture, relative_source),
-    )
-    run = (runner or (lambda argv: run_mutator(argv, timeout=timeout)))(command)
-
-    if run.exit_code == 2:
-        raise AssertionError(f"mutator baseline failed for {relative_source}:\n{run.output}")
-    if run.exit_code == 1:
-        raise AssertionError(f"mutator rejected the command {command}:\n{run.output}")
-
-    wanted = _normalise_mutation(mutation)
-    matching = [
-        outcome
-        for outcome in parse_mutator_output(run.output)
-        if outcome.line == line
-        and _normalise_mutation(outcome.mutation) == wanted
-        and Path(outcome.path).name == source.name
-    ]
-    if any(outcome.killed for outcome in matching):
-        return matching[0]
-    if matching:
-        raise AssertionError(
-            f"mutant {mutation!r} at {relative_source}:{line} survived — "
-            f"no test pins that operator"
-        )
-    raise AssertionError(
-        f"no mutant ran for {mutation!r} at {relative_source}:{line}; "
-        f"mutator reported:\n{run.output}"
-    )
