@@ -34,6 +34,134 @@ from ksma.shared.errors import (
 )
 
 
+# ---------------------------------------------------------------------------
+# Issue #37 — parametrised HTTP-status mapping for every documented code.
+#
+# The table below mirrors the 9 codes the issue specifies: INVALID_VALUE,
+# REQUIRED_FIELD, REFERENCE_SCOPE_MISMATCH, STATE_CONFLICT, VERSION_CONFLICT,
+# CAPACITY_EXCEEDED, ACCESS_DENIED, IDEMPOTENCY_CONFLICT, POLICY_NOT_CONFIGURED.
+# We pin the (error class, code, http_status) tuple for every row so that
+# any silent change to the mapping in ``ksma.shared.errors`` fails a test.
+# ---------------------------------------------------------------------------
+
+
+ERROR_HTTP_STATUS_TABLE = [
+    pytest.param(
+        ValidationError, "INVALID_VALUE", 422, id="INVALID_VALUE",
+    ),
+    pytest.param(
+        RequiredFieldError, "REQUIRED_FIELD", 422, id="REQUIRED_FIELD",
+    ),
+    pytest.param(
+        ReferenceScopeMismatchError, "REFERENCE_SCOPE_MISMATCH", 422,
+        id="REFERENCE_SCOPE_MISMATCH",
+    ),
+    pytest.param(
+        StateConflictError, "STATE_CONFLICT", 409, id="STATE_CONFLICT",
+    ),
+    pytest.param(
+        VersionConflictError, "VERSION_CONFLICT", 409, id="VERSION_CONFLICT",
+    ),
+    pytest.param(
+        CapacityExceededError, "CAPACITY_EXCEEDED", 409, id="CAPACITY_EXCEEDED",
+    ),
+    pytest.param(
+        AccessDeniedError, "ACCESS_DENIED", 403, id="ACCESS_DENIED",
+    ),
+    # IDEMPOTENCY_CONFLICT alias — the class is named IDEMPOTENCY_KEY_CONFLICT
+    # in the source but the wire contract spells it differently in some
+    # older docs. We pin the actual class behaviour here.
+    pytest.param(
+        IdempotencyKeyConflictError, "IDEMPOTENCY_KEY_CONFLICT", 422,
+        id="IDEMPOTENCY_CONFLICT",
+    ),
+    pytest.param(
+        PolicyNotConfiguredError, "POLICY_NOT_CONFIGURED", 409,
+        id="POLICY_NOT_CONFIGURED",
+    ),
+]
+
+
+@pytest.mark.parametrize("error_cls, expected_code, expected_status", ERROR_HTTP_STATUS_TABLE)
+def test_error_class_http_status_mapping(
+    error_cls: type[DomainError],
+    expected_code: str,
+    expected_status: int,
+) -> None:
+    """The class-level `code` + `http_status` attributes must match the
+    documented wire mapping exactly — any silent flip (e.g. ``409`` →
+    ``410`` or a code rename) breaks a row of this table.
+    """
+    assert error_cls.code == expected_code
+    assert error_cls.http_status == expected_status
+
+    # And the instance-level access returns the same value — no classmethod
+    # shortcut that loses the value when the instance is constructed.
+    e = error_cls("a message")
+    assert e.code == expected_code
+    assert e.http_status == expected_status
+
+
+@pytest.mark.parametrize("error_cls, expected_code, expected_status", ERROR_HTTP_STATUS_TABLE)
+def test_error_payload_carries_code_and_correlation_id(
+    error_cls: type[DomainError],
+    expected_code: str,
+    expected_status: int,
+) -> None:
+    """`to_payload()` must serialise `code` + `correlation_id` on every row
+    of the table. The correlation_id is the only mandatory field for
+    downstream tracing per NFR08.
+    """
+    e = error_cls("a message")
+    p = e.to_payload()
+    assert p["code"] == expected_code
+    assert p["message"] == "a message"
+    # Correlation_id is always present and parses cleanly.
+    UUID(p["correlation_id"])
+    # And the http_status on the instance matches the class-level mapping
+    # so the FastAPI handler can pick it up.
+    assert e.http_status == expected_status
+
+
+# ---------------------------------------------------------------------------
+# ACCESS_DENIED payload must NEVER include arbitrary details.
+# Per OWASP R1 + access matrix §3: no participant name, no object existence,
+# no object payload. The error class accepts `details={...}` but the canonical
+# shape (no details supplied) must serialise to a payload without that key.
+# ---------------------------------------------------------------------------
+
+
+def test_access_denied_payload_has_no_details_by_default() -> None:
+    """An AccessDeniedError constructed without details must NOT include a
+    `details` key in the wire payload. A `details={}` mutation or a
+    `payload["details"] = ...` flip in ``to_payload`` would surface here.
+    """
+    e = AccessDeniedError("Forbidden")
+    p = e.to_payload()
+    assert "details" not in p
+    assert "field_path" not in p
+    assert p == {
+        "code": "ACCESS_DENIED",
+        "message": "Forbidden",
+        "correlation_id": p["correlation_id"],
+    }
+
+
+def test_access_denied_does_not_leak_pii_via_message() -> None:
+    """The message is the safe human-readable string; we pin that arbitrary
+    caller-supplied strings do NOT appear in `details`. A mutation that
+    copied `message` into `details` would leak PII and fail here.
+    """
+    e = AccessDeniedError(
+        "Forbidden: cannot access participant participant_id=12345",
+    )
+    p = e.to_payload()
+    # The raw message is preserved (operators need to log it), but details
+    # is not auto-populated.
+    assert p["message"].startswith("Forbidden")
+    assert "details" not in p
+
+
 class TestBaseDomainError:
     def test_message_and_correlation_id_round_trip(self) -> None:
         e = DomainError("Something went wrong")

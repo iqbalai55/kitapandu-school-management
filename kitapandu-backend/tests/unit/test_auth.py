@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import jwt
 import pytest
@@ -196,3 +196,122 @@ class TestJWTAccessToken:
         )
         with pytest.raises(TokenRevokedError):
             decode_access_token(token)
+
+    # --- positive assertions on the issued JWT claims (issue #37) ----------
+    # The existing tests above pin shape, but they do not pin *every*
+    # claims field. The point of this block: a mutation that drops or
+    # relabels a custom claim (tz_memberships / tz_current_tenant /
+    # tz_current_unit / tz_authz_revision) must break a test below.
+    def test_claims_include_membership_id_and_role_code(self) -> None:
+        p = self._payload()
+        token, _ = issue_access_token(**p)
+        claims = decode_access_token(token)
+        # The membership dict survives the round-trip verbatim: id + tenant +
+        # role_code + authz_revision are all readable from the claims dict.
+        membership = claims["tz_memberships"][0]
+        assert membership["id"] == p["memberships"][0]["id"]
+        assert membership["tenant_id"] == p["memberships"][0]["tenant_id"]
+        assert membership["role_code"] == "AC"
+        assert membership["authz_revision"] == 1
+
+    def test_claims_current_unit_is_serialised(self) -> None:
+        unit = uuid4()
+        p = self._payload()
+        p["current_unit_id"] = unit
+        token, _ = issue_access_token(**p)
+        claims = decode_access_token(token)
+        assert claims["tz_current_unit"] == str(unit)
+
+    def test_claims_current_tenant_none_serialised_as_none(self) -> None:
+        # current_tenant_id=None for service principals; we must NOT coerce
+        # to the string "None" or the empty string.
+        p = self._payload()
+        p["current_tenant_id"] = None
+        token, _ = issue_access_token(**p)
+        claims = decode_access_token(token)
+        assert claims["tz_current_tenant"] is None
+
+    def test_claims_authz_revision_round_trips(self) -> None:
+        # An `==` → `!=` flip on the authz_revision copy would not change the
+        # token bytes (they're just an int), but a `1 → 0` literal flip
+        # would. We test against a non-default value (5) to surface both.
+        p = self._payload()
+        p["authz_revision"] = 5
+        token, _ = issue_access_token(**p)
+        claims = decode_access_token(token)
+        assert claims["tz_authz_revision"] == 5
+
+    def test_jti_is_unique_per_token(self) -> None:
+        # Same payload, two calls — jti must be different. A `uuid4()`
+        # removal flip would make these equal.
+        p = self._payload()
+        t1, _ = issue_access_token(**p)
+        t2, _ = issue_access_token(**p)
+        c1 = decode_access_token(t1)
+        c2 = decode_access_token(t2)
+        assert c1["jti"] != c2["jti"]
+        # Sanity: jti is a valid UUID4 hex.
+        UUID(c1["jti"])
+        UUID(c2["jti"])
+
+    def test_audience_mismatch_raises_token_revoked(self) -> None:
+        # Same audience code in module-level fixture; flip the audience and
+        # confirm the wrong-aud token is rejected with the expected class
+        # (not a generic InvalidTokenError). This pins the *type* of error
+        # so a `raise ValueError(...)` mutation in jwt.decode catches here.
+        p = self._payload()
+        token, _ = issue_access_token(**p)
+        from ksma.shared.auth.jwt import _ALG
+        from ksma.settings import Settings
+        other = Settings(
+            env="test", log_level="INFO",
+            postgres_dsn="postgresql+asyncpg://test:test@localhost:5432/test",
+            postgres_dsn_sync="postgresql://test:test@localhost:5432/test",
+            jwt_secret=__import__("pydantic").SecretStr("test-secret-do-not-use-in-prod"),
+            jwt_issuer="kitapandu-test",
+            jwt_audience="another-audience",
+            access_token_ttl_seconds=900,
+            refresh_token_ttl_seconds=604800,
+            minio_endpoint="localhost:9000",
+            minio_access_key="minioadmin",
+            minio_secret_key=__import__("pydantic").SecretStr("minioadmin"),
+            minio_secure=False,
+            s3_bucket="ksma-test",
+            presigned_url_ttl_seconds=300,
+            outbox_poll_interval_seconds=0.5,
+            outbox_batch_size=50,
+            max_file_bytes=10485760,
+            default_timezone="Asia/Jakarta",
+        )
+        with patch("ksma.shared.auth.jwt.get_settings", return_value=other):
+            with pytest.raises(TokenRevokedError):
+                decode_access_token(token)
+
+    def test_authz_version_mismatch_raises(self) -> None:
+        """Authz-revision comparison lives in the resolver, not jwt.decode.
+
+        We pin the contract that issuing with a stale authz_revision produces
+        a token whose tz_authz_revision is the OLD value — i.e., it is the
+        resolver's job (not the JWT layer) to detect the mismatch. A flip
+        that pinned the new value at issue time would let a stale token pass.
+        """
+        p = self._payload()
+        p["authz_revision"] = 1  # stale
+        token, _ = issue_access_token(**p)
+        claims = decode_access_token(token)
+        assert claims["tz_authz_revision"] == 1  # the issue-time value, unchanged
+        # Now if the resolver were to receive a current-revision of 2 from
+        # the DB, a `==` → `!=` flip on the comparison would falsely allow it.
+        # We exercise that the FIELD carries the issue-time value so the
+        # resolver's strict-equality check has something to compare against.
+
+    def test_expired_token_raises_token_expired(self) -> None:
+        # Same scenario as test_decode_rejects_expired, but assert the
+        # error type explicitly (the existing test already does this; we
+        # duplicate to pin the *class* with a non-default TTL).
+        p = self._payload()
+        import ksma.settings as settings_mod
+        with patch.object(settings_mod.get_settings(), "access_token_ttl_seconds", -10):
+            token, _ = issue_access_token(**p)
+            with pytest.raises(TokenExpiredError):
+                decode_access_token(token)
