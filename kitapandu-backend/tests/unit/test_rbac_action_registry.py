@@ -15,6 +15,7 @@ DB, no FastAPI app, no real ``TenantContext`` instance.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
@@ -398,3 +399,385 @@ class TestScopeJsonRoundTrip:
         )
         roundtripped = Scope.from_json(s.to_json())
         assert roundtripped == s
+
+
+# ---------------------------------------------------------------------------
+# Issue #37 — parametrised table over every scope dimension ("ScopeKind").
+#
+# The source models these as named fields on the ``Scope`` dataclass, not
+# an enum; the spec calls them "ScopeKind members". We treat each named
+# field as a kind and pin its JSON round-trip + its ``covers_target``
+# behaviour for every kind below.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def one_id() -> UUID:
+    return uuid4()
+
+
+@pytest.fixture
+def other_id() -> UUID:
+    return uuid4()
+
+
+_SCOPE_KIND_FIELDS = [
+    "units",
+    "programs",
+    "batches",
+    "sessions",
+    "participants",
+    "columns",
+    "exclude_participants",
+]
+
+
+@pytest.mark.parametrize("field_name", _SCOPE_KIND_FIELDS)
+def test_scope_from_json_round_trip_per_kind(field_name: str, one_id: UUID) -> None:
+    """For every scope kind, ``from_json`` must reconstruct the matching
+    field. A `_uuids(key)` → `return tuple()` mutation would surface here
+    because the parsed field would be empty.
+    """
+    if field_name == "columns":
+        # `columns` is a tuple[str, ...] not a tuple[UUID, ...].
+        json_payload = {"columns": ["name", "email"]}
+        expected = ("name", "email")
+    elif field_name == "exclude_participants":
+        # Excluded participants: from_json includes them in exclude_participants.
+        json_payload = {"exclude_participants": [str(one_id)]}
+        expected = (one_id,)
+    else:
+        json_payload = {field_name: [str(one_id)]}
+        expected = (one_id,)
+
+    s = Scope.from_json(json_payload)
+    assert getattr(s, field_name) == expected
+
+
+@pytest.mark.parametrize("field_name", _SCOPE_KIND_FIELDS)
+def test_scope_to_json_emits_per_kind(field_name: str, one_id: UUID) -> None:
+    """For every scope kind, ``to_json`` must emit a list-shaped value under
+    the matching key. A missing `if self.X` branch would silently drop the
+    field from the wire shape.
+    """
+    if field_name == "columns":
+        s = Scope(columns=("name",))
+        d = s.to_json()
+        assert d["columns"] == ["name"]
+    else:
+        s = Scope(**{field_name: (one_id,)})
+        d = s.to_json()
+        assert d[field_name] == [str(one_id)]
+
+
+@pytest.mark.parametrize("field_name", _SCOPE_KIND_FIELDS)
+def test_scope_to_json_omits_unset_kinds(field_name: str) -> None:
+    """If a kind is not set on the Scope, it must NOT appear in ``to_json``
+    output. A `if field_name is not None:` / `if field_name or []:` flip
+    would leak the empty tuple as `[]` for that kind.
+    """
+    s = Scope()  # every kind empty
+    d = s.to_json()
+    assert field_name not in d
+    # And every other kind is also absent (sanity).
+    for other in _SCOPE_KIND_FIELDS:
+        assert other not in d
+
+
+def _arg_for_kind(field_name: str, value: UUID | str) -> dict[str, Any]:
+    """Map a scope field name to the kwarg name expected by
+    ``Scope.covers_target``. Each scope field has its own kwarg name."""
+    return {
+        "units": {"unit_id": value},
+        "programs": {"program_id": value},
+        "batches": {"batch_id": value},
+        "sessions": {"session_id": value},
+        "participants": {"participant_id": value},
+        "columns": {"column": value},
+        "exclude_participants": {"participant_id": value},
+    }[field_name]
+
+
+@pytest.mark.parametrize("field_name", _SCOPE_KIND_FIELDS)
+def test_covers_target_accepts_matching_target_per_kind(
+    field_name: str, one_id: UUID
+) -> None:
+    """For every scope kind, a target matching the scope must pass
+    ``covers_target``. A `not in self.X` flip on the matching branch
+    would surface here.
+
+    Note: ``exclude_participants`` inverts this — a participant in the
+    exclusion list MUST NOT be allowed. We parametrize both directions
+    so the symmetry is visible in the test name.
+    """
+    if field_name == "exclude_participants":
+        # Inverse: matching participant (one_id) is in the exclusion list
+        # → must be rejected.
+        s = Scope(exclude_participants=(one_id,))
+        assert s.covers_target(participant_id=one_id) is False
+        return
+
+    if field_name == "columns":
+        s = Scope(columns=("name",))
+        target_value: UUID | str = "name"
+    else:
+        s = Scope(**{field_name: (one_id,)})
+        target_value = one_id
+
+    kwargs = _arg_for_kind(field_name, target_value)
+    assert s.covers_target(**kwargs) is True
+
+
+@pytest.mark.parametrize("field_name", _SCOPE_KIND_FIELDS)
+def test_covers_target_rejects_non_matching_target_per_kind(
+    field_name: str, one_id: UUID, other_id: UUID
+) -> None:
+    """For every scope kind, a target NOT matching the scope must fail
+    ``covers_target``. The complement of the matching case.
+
+    Note: ``exclude_participants`` inverts this — a participant NOT in the
+    exclusion list MUST be allowed.
+    """
+    if field_name == "exclude_participants":
+        # Inverse: non-matching participant (other_id) is NOT in the
+        # exclusion list → must be allowed.
+        s = Scope(exclude_participants=(one_id,))
+        assert s.covers_target(participant_id=other_id) is True
+        return
+
+    if field_name == "columns":
+        s = Scope(columns=("name",))
+        target_value = "different_column"
+    else:
+        s = Scope(**{field_name: (one_id,)})
+        target_value = other_id
+
+    kwargs = _arg_for_kind(field_name, target_value)
+    assert s.covers_target(**kwargs) is False
+
+
+@pytest.mark.parametrize("field_name", _SCOPE_KIND_FIELDS)
+def test_covers_target_treats_none_target_as_allowed_per_kind(
+    field_name: str, one_id: UUID
+) -> None:
+    """Per ``covers_target``'s contract, a ``None`` target field bypasses the
+    corresponding scope check (because the caller is asking "does this
+    scope cover ANY target of this kind?"). Pin this for every kind so
+    that an `if X and Y not in Z` → `if X or Y not in Z` flip is caught.
+    """
+    if field_name == "columns":
+        s = Scope(columns=("name",))
+    else:
+        s = Scope(**{field_name: (one_id,)})
+    kwargs = _arg_for_kind(field_name, None)
+    # `covers_target` should NOT crash on None and should allow it.
+    assert s.covers_target(**kwargs) is True
+
+
+# ---------------------------------------------------------------------------
+# Whole-grant resolver parametrized over action × grant-status.
+#
+# Issue #37 — kill `evaluate` surviving operator mutations. We re-cover the
+# status / validity / action-membership / scope dimensions in a single
+# parametrised table.
+# ---------------------------------------------------------------------------
+
+
+def _make_grant_for_table(
+    *,
+    role: RoleCode,
+    actions: frozenset[ActionCode],
+    scope: Scope,
+    status: str,
+    valid_from: datetime,
+    valid_until: datetime | None,
+) -> GrantRow:
+    return GrantRow(
+        id=uuid4(),
+        role_code=role,
+        action_ids=actions,
+        scope=scope,
+        valid_from=valid_from,
+        valid_until=valid_until,
+        status=status,
+        policy_id=uuid4(),
+    )
+
+
+@pytest.fixture
+def base_now() -> datetime:
+    return datetime(2026, 10, 20, 12, 0, 0, tzinfo=timezone.utc)
+
+
+@pytest.fixture
+def base_grant(base_now: datetime) -> GrantRow:
+    return _make_grant_for_table(
+        role=RoleCode.FI,
+        actions=frozenset({ActionCode.FIN_A05}),
+        scope=Scope(),
+        status="active",
+        valid_from=base_now - timedelta(days=1),
+        valid_until=base_now + timedelta(days=1),
+    )
+
+
+@pytest.mark.parametrize(
+    "status, expected_allowed",
+    [
+        ("active", True),
+        ("pending", False),
+        ("expired", False),
+        ("revoked", False),
+    ],
+    ids=["active", "pending", "expired", "revoked"],
+)
+def test_evaluate_status_dimension(
+    base_grant: GrantRow, base_now: datetime, status: str, expected_allowed: bool
+) -> None:
+    """For each grant status, ``evaluate`` returns the expected allowed bool.
+
+    A `!= "active"` → `== "active"` flip would let the wrong statuses through.
+    """
+    g = _make_grant_for_table(
+        role=base_grant.role_code,
+        actions=base_grant.action_ids,
+        scope=base_grant.scope,
+        status=status,
+        valid_from=base_grant.valid_from,
+        valid_until=base_grant.valid_until,
+    )
+    decision = evaluate(
+        actor=None, action=ActionCode.FIN_A05,
+        target=Target(), now=base_now, grants=(g,),
+    )
+    assert decision.allowed is expected_allowed
+
+
+@pytest.mark.parametrize(
+    "valid_from_offset_days, valid_until_offset_days, expected_allowed",
+    [
+        # Not yet valid
+        (1, 10, False),
+        # Already expired
+        (-10, -1, False),
+        # Valid for a wide window around now
+        (-1, 1, True),
+        # Edge: now + 0 = valid_until; the resolver uses `<=` so this is False (expired).
+        (-1, 0, False),
+        # Edge: now == valid_from; resolver uses strict `>` so this is allowed.
+        (0, 1, True),
+    ],
+    ids=["not_yet_valid", "expired", "wide_window", "exact_expiry", "exact_start"],
+)
+def test_evaluate_validity_dimension(
+    base_now: datetime,
+    valid_from_offset_days: int,
+    valid_until_offset_days: int,
+    expected_allowed: bool,
+) -> None:
+    """For a matrix of (valid_from, valid_until) offsets, ``evaluate``
+    returns the expected allowed bool. A `>` → `>=` flip on the
+    valid_from check, or a `<=` → `<` flip on valid_until, would change
+    at least one row.
+    """
+    valid_from = base_now + timedelta(days=valid_from_offset_days)
+    valid_until = (
+        base_now + timedelta(days=valid_until_offset_days)
+        if valid_until_offset_days is not None
+        else None
+    )
+    g = _make_grant_for_table(
+        role=RoleCode.FI,
+        actions=frozenset({ActionCode.FIN_A05}),
+        scope=Scope(),
+        status="active",
+        valid_from=valid_from,
+        valid_until=valid_until,
+    )
+    decision = evaluate(
+        actor=None, action=ActionCode.FIN_A05,
+        target=Target(), now=base_now, grants=(g,),
+    )
+    assert decision.allowed is expected_allowed
+
+
+def test_evaluate_allows_grant_with_no_upper_bound(base_now: datetime) -> None:
+    """A grant with valid_until=None is valid forever (until backdated/revoked).
+    """
+    g = _make_grant_for_table(
+        role=RoleCode.FI,
+        actions=frozenset({ActionCode.FIN_A05}),
+        scope=Scope(),
+        status="active",
+        valid_from=base_now - timedelta(days=1),
+        valid_until=None,
+    )
+    decision = evaluate(
+        actor=None, action=ActionCode.FIN_A05,
+        target=Target(), now=base_now, grants=(g,),
+    )
+    assert decision.allowed is True
+
+
+@pytest.mark.parametrize(
+    "action_requested, expected_allowed",
+    [
+        (ActionCode.FIN_A05, True),
+        (ActionCode.FIN_A04, False),
+        (ActionCode.FIN_A08, False),
+    ],
+    ids=["in_grant", "not_in_grant_low", "not_in_grant_high"],
+)
+def test_evaluate_action_membership_dimension(
+    base_grant: GrantRow, base_now: datetime,
+    action_requested: ActionCode, expected_allowed: bool,
+) -> None:
+    """``evaluate`` returns True only when the action is in the grant's
+    ``action_ids``. A `not in` → `in` flip would surface here.
+    """
+    decision = evaluate(
+        actor=None, action=action_requested,
+        target=Target(), now=base_now, grants=(base_grant,),
+    )
+    assert decision.allowed is expected_allowed
+
+
+def test_evaluate_empty_scope_covers_any_target(base_now: datetime) -> None:
+    """An empty Scope() must cover any target — including one with a unit."""
+    g = _make_grant_for_table(
+        role=RoleCode.FI,
+        actions=frozenset({ActionCode.FIN_A05}),
+        scope=Scope(),
+        status="active",
+        valid_from=base_now - timedelta(days=1),
+        valid_until=None,
+    )
+    target = Target(unit_id=uuid4())
+    decision = evaluate(
+        actor=None, action=ActionCode.FIN_A05,
+        target=target, now=base_now, grants=(g,),
+    )
+    assert decision.allowed is True
+
+
+def test_evaluate_unit_scope_rejects_mismatched_unit(base_now: datetime) -> None:
+    """A Scope(units=(unit,)) must reject a target with a different unit.
+    The whole-grant rule means a mismatched unit cannot be saved by an
+    empty-scope grant elsewhere.
+    """
+    unit_in_scope = uuid4()
+    other_unit_in_target = uuid4()
+    g = _make_grant_for_table(
+        role=RoleCode.FI,
+        actions=frozenset({ActionCode.FIN_A05}),
+        scope=Scope(units=(unit_in_scope,)),
+        status="active",
+        valid_from=base_now - timedelta(days=1),
+        valid_until=None,
+    )
+    target = Target(unit_id=other_unit_in_target)
+    decision = evaluate(
+        actor=None, action=ActionCode.FIN_A05,
+        target=target, now=base_now, grants=(g,),
+    )
+    assert decision.allowed is False

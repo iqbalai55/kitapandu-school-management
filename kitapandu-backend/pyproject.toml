@@ -56,6 +56,7 @@ packages = ["src/ksma"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+pythonpath = ["src"]
 addopts = ["-ra", "--strict-markers", "--tb=short"]
 markers = [
   "scenario: marks a validation scenario from the data dictionary (V01..V24)",

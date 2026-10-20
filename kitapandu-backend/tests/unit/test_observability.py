@@ -232,3 +232,141 @@ class TestCorrelationIdMiddleware:
             resp_b = await client.get("/echo")
 
         assert resp_a.headers[CORRELATION_ID_HEADER] != resp_b.headers[CORRELATION_ID_HEADER]
+
+
+# ---------------------------------------------------------------------------
+# Issue #37 — pin the NoOpTracer/NoOpSpan surface so flag flips are caught.
+#
+# The original mutations under ``ksma.observability.middleware.dispatch`` are
+# `True → False` flips on the ``if _is_enabled()`` branch. We can't reach the
+# true branch without enabling OTel (which needs the SDK), but we CAN pin
+# the NoOp surface so the "off" path is fully exercised: every method must
+# accept its inputs and return None without state, and the context manager
+# must yield the same span object on enter/exit regardless of how the
+# internal flag flips.
+# ---------------------------------------------------------------------------
+
+
+class TestNoOpSpanNoState:
+    """``_NoOpSpan`` is a value object that absorbs every call."""
+
+    def test_set_attribute_returns_none(self) -> None:
+        # The signature claims Any -> None; a `return True` mutation would
+        # surface here.
+        from ksma.observability import _NoOpSpan
+
+        span = _NoOpSpan()
+        result = span.set_attribute("key", "value")
+        assert result is None
+
+    def test_set_attribute_accepts_arbitrary_types(self) -> None:
+        from ksma.observability import _NoOpSpan
+
+        span = _NoOpSpan()
+        # Must not raise on common OTel attribute shapes — strings, ints,
+        # bools, floats, sequences.
+        span.set_attribute("k", "v")
+        span.set_attribute("k", 1)
+        span.set_attribute("k", 1.5)
+        span.set_attribute("k", True)
+        span.set_attribute("k", False)
+        span.set_attribute("k", None)
+        span.set_attribute("k", ("a", "b"))
+        span.set_attribute("k", [1, 2])
+
+    def test_set_status_returns_none(self) -> None:
+        from ksma.observability import _NoOpSpan
+
+        span = _NoOpSpan()
+        # Accept positional + keyword args (the real OTel API does both).
+        assert span.set_status("OK") is None
+        assert span.set_status(status_code="ERROR", description="x") is None
+
+    def test_record_exception_returns_none(self) -> None:
+        from ksma.observability import _NoOpSpan
+
+        span = _NoOpSpan()
+        assert span.record_exception(ValueError("x")) is None
+        # And the empty-exception form.
+        assert span.record_exception() is None
+
+    def test_end_returns_none(self) -> None:
+        from ksma.observability import _NoOpSpan
+
+        span = _NoOpSpan()
+        assert span.end() is None
+
+
+class TestNoOpTracerConsistency:
+    """``_NoOpTracer.start_as_current_span`` must produce a stable span.
+
+    The issue #37 sub-task: ``_NoOpSpan`` / ``_NoOpTracer`` produce identical
+    records whether the dispatcher's internal flag is ``True`` or ``False``.
+    We exercise the public API and pin the *contract* — no exception, no
+    state, the yielded span is the same object on enter and exit.
+    """
+
+    def test_start_as_current_span_returns_context_manager(self) -> None:
+        from ksma.observability import _NoOpSpan, _NoOpTracer
+
+        tracer = _NoOpTracer()
+        cm = tracer.start_as_current_span("unit-test")
+        # Must be usable as a context manager — i.e. it has __enter__/__exit__.
+        assert hasattr(cm, "__enter__")
+        assert hasattr(cm, "__exit__")
+
+    def test_context_manager_yields_a_no_op_span(self) -> None:
+        from ksma.observability import _NoOpSpan, _NoOpTracer
+
+        tracer = _NoOpTracer()
+        with tracer.start_as_current_span("unit-test") as span:
+            assert isinstance(span, _NoOpSpan)
+
+    def test_repeated_calls_return_independent_spans(self) -> None:
+        # A single shared mutable span would break tests like
+        # ``record_exception then start_as_current_span`` — the
+        # contract is that each ``with`` block gets a fresh span.
+        from ksma.observability import _NoOpTracer
+
+        tracer = _NoOpTracer()
+        with tracer.start_as_current_span("a") as span_a:
+            with tracer.start_as_current_span("b") as span_b:
+                # The inner span is a different object.
+                assert span_a is not span_b
+
+    def test_start_span_returns_a_no_op_span_directly(self) -> None:
+        from ksma.observability import _NoOpSpan, _NoOpTracer
+
+        tracer = _NoOpTracer()
+        # ``start_span`` (no context manager) is part of the public
+        # Tracer surface.
+        span = tracer.start_span("unit-test")
+        assert isinstance(span, _NoOpSpan)
+        assert span.set_attribute("k", "v") is None
+
+
+class TestIsEnabledFlagStable:
+    """The ``_is_enabled`` flag must read the same value across calls in a
+    single test (no cache poisoning).
+
+    The middleware dispatcher checks this flag; a flip on the cache
+    (e.g. returning ``None`` instead of the boolean) would crash on a
+    truthiness check.
+    """
+
+    def test_is_enabled_returns_bool(self) -> None:
+        from ksma.observability import _is_enabled
+
+        result = _is_enabled()
+        assert isinstance(result, bool)
+        # And it's False — we seed KITAPANDU_OTEL_ENABLED=false in the
+        # module-level autouse fixture.
+        assert result is False
+
+    def test_is_enabled_stable_across_calls(self) -> None:
+        from ksma.observability import _is_enabled
+
+        # Two calls in the same test must agree. A cache flip would
+        # surface here.
+        assert _is_enabled() == _is_enabled()
+        assert _is_enabled() is False
