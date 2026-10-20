@@ -115,7 +115,7 @@ class ParticipantRepository:
             await self.session.execute(
                 text(
                     f"""
-                    SELECT id, participant_no, full_name, birth_date, contact,
+                    SELECT id, tenant_id, participant_no, full_name, birth_date, contact,
                            identity_reference, status, support_needs_note_enc,
                            created_at, created_by, updated_at, updated_by
                     FROM participant

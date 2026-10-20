@@ -9,6 +9,7 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy import (
+    text,
     CheckConstraint,
     Date,
     DateTime,
@@ -27,7 +28,8 @@ class Base(DeclarativeBase):
 
 class ParticipantRow(Base):
     __tablename__ = "participant"
-    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True)
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True,
+        server_default=text("ksma_uuid()"))
     tenant_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("tenant.id"), nullable=False)
     participant_no: Mapped[str] = mapped_column(String(40), nullable=False)
     full_name: Mapped[str] = mapped_column(Text, nullable=False)
@@ -50,7 +52,8 @@ class ParticipantRow(Base):
 
 class RelatedPartyRow(Base):
     __tablename__ = "related_party"
-    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True)
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True,
+        server_default=text("ksma_uuid()"))
     tenant_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("tenant.id"), nullable=False)
     party_type: Mapped[str] = mapped_column(String(32), nullable=False)
     display_name: Mapped[str] = mapped_column(Text, nullable=False)
@@ -65,7 +68,8 @@ class RelatedPartyRow(Base):
 
 class ParticipantAccountLinkRow(Base):
     __tablename__ = "participant_account_link"
-    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True)
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True,
+        server_default=text("ksma_uuid()"))
     tenant_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("tenant.id"), nullable=False)
     account_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("account.id"), nullable=False)
     participant_id: Mapped[UUID | None] = mapped_column(PgUUID(as_uuid=True), ForeignKey("participant.id"), nullable=True)
@@ -95,7 +99,8 @@ class ParticipantAccountLinkRow(Base):
 
 class ParticipantRelationRow(Base):
     __tablename__ = "participant_relation"
-    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True)
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True,
+        server_default=text("ksma_uuid()"))
     tenant_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("tenant.id"), nullable=False)
     participant_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("participant.id"), nullable=False)
     related_party_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("related_party.id"), nullable=False)

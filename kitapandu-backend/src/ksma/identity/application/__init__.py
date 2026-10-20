@@ -465,6 +465,7 @@ async def login(
         account_id=a.id,
         membership_id=m.id,
         token_hash=refresh_hash,
+        issued_at=clock().now(),
         expires_at=clock().now() + __import__("datetime").timedelta(days=7),
     )
     session.add(rt)

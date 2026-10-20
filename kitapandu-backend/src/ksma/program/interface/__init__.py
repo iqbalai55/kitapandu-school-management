@@ -37,12 +37,10 @@ from ksma.program.infrastructure.repositories import (
 )
 from ksma.shared.persistence import session_scope
 from ksma.shared.tenancy import TenantContext
+from ksma.shared.auth.dependencies import tenant_context_dep as require_tenant_context
 
 router = APIRouter(prefix="/api/v1", tags=["program"])
 
-
-def require_tenant_context() -> TenantContext:  # pragma: no cover
-    raise NotImplementedError
 
 
 # --- Schemas -----------------------------------------------------------------

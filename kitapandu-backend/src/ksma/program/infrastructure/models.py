@@ -6,6 +6,7 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy import (
+    text,
     Boolean,
     CheckConstraint,
     DateTime,
@@ -27,7 +28,8 @@ class Base(DeclarativeBase):
 
 class ProgramRow(Base):
     __tablename__ = "program"
-    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True)
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True,
+        server_default=text("ksma_uuid()"))
     tenant_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("tenant.id"), nullable=False)
     unit_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("education_unit.id"), nullable=False)
     program_code: Mapped[str] = mapped_column(String(40), nullable=False)
@@ -45,7 +47,8 @@ class ProgramRow(Base):
 
 class ProgramVersionRow(Base):
     __tablename__ = "program_version"
-    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True)
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True,
+        server_default=text("ksma_uuid()"))
     tenant_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("tenant.id"), nullable=False)
     unit_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("education_unit.id"), nullable=False)
     program_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("program.id"), nullable=False)
@@ -68,7 +71,8 @@ class ProgramVersionRow(Base):
 
 class AcademicPeriodRow(Base):
     __tablename__ = "academic_period"
-    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True)
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True,
+        server_default=text("ksma_uuid()"))
     tenant_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("tenant.id"), nullable=False)
     unit_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("education_unit.id"), nullable=False)
     period_code: Mapped[str] = mapped_column(String(40), nullable=False)
@@ -90,7 +94,8 @@ class AcademicPeriodRow(Base):
 
 class RubricVersionRow(Base):
     __tablename__ = "rubric_version"
-    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True)
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True,
+        server_default=text("ksma_uuid()"))
     tenant_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("tenant.id"), nullable=False)
     unit_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("education_unit.id"), nullable=False)
     program_version_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("program_version.id"), nullable=False)
@@ -112,7 +117,8 @@ class RubricVersionRow(Base):
 
 class RubricIndicatorRow(Base):
     __tablename__ = "rubric_indicator"
-    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True)
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True,
+        server_default=text("ksma_uuid()"))
     tenant_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("tenant.id"), nullable=False)
     rubric_version_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("rubric_version.id"), nullable=False)
     indicator_code: Mapped[str] = mapped_column(String(40), nullable=False)

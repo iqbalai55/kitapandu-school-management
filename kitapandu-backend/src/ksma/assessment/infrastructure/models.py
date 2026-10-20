@@ -6,6 +6,7 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy import (
+    text,
     CheckConstraint,
     Date,
     DateTime,
@@ -29,7 +30,8 @@ class Base(DeclarativeBase):
 
 class AssessmentRow(Base):
     __tablename__ = "assessment"
-    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True)
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True,
+        server_default=text("ksma_uuid()"))
     tenant_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("tenant.id"), nullable=False)
     unit_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("education_unit.id"), nullable=False)
     enrollment_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("enrollment.id"), nullable=False)
@@ -57,7 +59,8 @@ class AssessmentRow(Base):
 
 class AssessmentResultRow(Base):
     __tablename__ = "assessment_result"
-    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True)
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True,
+        server_default=text("ksma_uuid()"))
     tenant_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("tenant.id"), nullable=False)
     assessment_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("assessment.id"), nullable=False)
     indicator_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("rubric_indicator.id"), nullable=False)
@@ -90,7 +93,8 @@ class AssessmentResultRow(Base):
 
 class AssessmentEvidenceRow(Base):
     __tablename__ = "assessment_evidence"
-    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True)
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True,
+        server_default=text("ksma_uuid()"))
     tenant_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("tenant.id"), nullable=False)
     assessment_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("assessment.id"), nullable=False)
     result_id: Mapped[UUID | None] = mapped_column(PgUUID(as_uuid=True), ForeignKey("assessment_result.id"), nullable=True)
@@ -113,7 +117,8 @@ class AssessmentEvidenceRow(Base):
 
 class ReportPublicationRow(Base):
     __tablename__ = "report_publication"
-    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True)
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True,
+        server_default=text("ksma_uuid()"))
     tenant_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("tenant.id"), nullable=False)
     unit_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("education_unit.id"), nullable=False)
     enrollment_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("enrollment.id"), nullable=False)
@@ -140,7 +145,8 @@ class ReportPublicationRow(Base):
 
 class CompletionDecisionRow(Base):
     __tablename__ = "completion_decision"
-    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True)
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True,
+        server_default=text("ksma_uuid()"))
     tenant_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("tenant.id"), nullable=False)
     unit_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("education_unit.id"), nullable=False)
     enrollment_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("enrollment.id"), nullable=False)
@@ -164,7 +170,8 @@ class CompletionDecisionRow(Base):
 
 class CertificateRow(Base):
     __tablename__ = "certificate"
-    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True)
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True,
+        server_default=text("ksma_uuid()"))
     tenant_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("tenant.id"), nullable=False)
     unit_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("education_unit.id"), nullable=False)
     completion_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("completion_decision.id"), nullable=False)

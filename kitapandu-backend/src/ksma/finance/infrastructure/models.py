@@ -11,6 +11,7 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy import (
+    text,
     CheckConstraint,
     Date,
     DateTime,
@@ -31,7 +32,8 @@ class Base(DeclarativeBase):
 
 class BillingPartyRow(Base):
     __tablename__ = "billing_party"
-    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True)
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True,
+        server_default=text("ksma_uuid()"))
     tenant_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("tenant.id"), nullable=False)
     party_type: Mapped[str] = mapped_column(String(32), nullable=False)
     display_name: Mapped[str] = mapped_column(Text, nullable=False)
@@ -45,7 +47,8 @@ class BillingPartyRow(Base):
 
 class InvoiceRow(Base):
     __tablename__ = "invoice"
-    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True)
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True,
+        server_default=text("ksma_uuid()"))
     tenant_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("tenant.id"), nullable=False)
     unit_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("education_unit.id"), nullable=False)
     participant_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("participant.id"), nullable=False)
@@ -74,7 +77,8 @@ class InvoiceRow(Base):
 
 class InvoiceLineRow(Base):
     __tablename__ = "invoice_line"
-    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True)
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True,
+        server_default=text("ksma_uuid()"))
     tenant_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("tenant.id"), nullable=False)
     invoice_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("invoice.id"), nullable=False)
     line_no: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -96,7 +100,8 @@ class InvoiceLineRow(Base):
 
 class InstallmentRow(Base):
     __tablename__ = "installment"
-    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True)
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True,
+        server_default=text("ksma_uuid()"))
     tenant_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("tenant.id"), nullable=False)
     invoice_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("invoice.id"), nullable=False)
     sequence_no: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -114,7 +119,8 @@ class InstallmentRow(Base):
 
 class PaymentSubmissionRow(Base):
     __tablename__ = "payment_submission"
-    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True)
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True,
+        server_default=text("ksma_uuid()"))
     tenant_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("tenant.id"), nullable=False)
     unit_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("education_unit.id"), nullable=False)
     participant_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("participant.id"), nullable=False)
@@ -141,7 +147,8 @@ class PaymentSubmissionRow(Base):
 
 class VerifiedPaymentRow(Base):
     __tablename__ = "verified_payment"
-    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True)
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True,
+        server_default=text("ksma_uuid()"))
     tenant_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("tenant.id"), nullable=False)
     unit_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("education_unit.id"), nullable=False)
     submission_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("payment_submission.id"), nullable=False)
@@ -164,7 +171,8 @@ class VerifiedPaymentRow(Base):
 
 class PaymentAllocationRow(Base):
     __tablename__ = "payment_allocation"
-    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True)
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True,
+        server_default=text("ksma_uuid()"))
     tenant_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("tenant.id"), nullable=False)
     payment_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("verified_payment.id"), nullable=False)
     installment_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("installment.id"), nullable=False)
@@ -182,7 +190,8 @@ class PaymentAllocationRow(Base):
 
 class ReceiptRow(Base):
     __tablename__ = "receipt"
-    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True)
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True,
+        server_default=text("ksma_uuid()"))
     tenant_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("tenant.id"), nullable=False)
     payment_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("verified_payment.id"), nullable=False)
     receipt_no: Mapped[str] = mapped_column(String(120), nullable=False)
@@ -203,7 +212,8 @@ class ReceiptRow(Base):
 
 class FinancialAdjustmentRow(Base):
     __tablename__ = "financial_adjustment"
-    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True)
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True,
+        server_default=text("ksma_uuid()"))
     tenant_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("tenant.id"), nullable=False)
     adjustment_kind: Mapped[str] = mapped_column(String(32), nullable=False)
     source_kind: Mapped[str] = mapped_column(String(32), nullable=False)
