@@ -28,6 +28,10 @@ help:                   ## Print this help (default goal)
 	@echo "  test-acceptance    run the V01..V24 PRD scenario pytest"
 	@echo "  smoke              run the end-to-end smoke pilot script"
 	@echo ""
+	@echo "Harness:"
+	@echo "  mutation           run mutator over the unit-test suite (kill-rate)"
+	@echo "  harness-report     run crapper + dryer + mutator and write the verdict"
+	@echo ""
 	@echo "Usage:  make <target>   (or  make -n <target>  to dry-run)"
 
 .PHONY: up
@@ -73,3 +77,51 @@ worker:                ## run the outbox worker
 .PHONY: dev
 dev:                   ## uvicorn dev server with reload on :8000
 	cd /home/panduai/repo/pandu-ai-id/kitapandu-school-management/kitapandu-backend && uvicorn ksma.main:app --reload --port 8000
+
+# Mutation target.
+#
+# Invokes the `mutator` harness over the kitapandu-backend unit suite.
+# The `--test-command` runs from the project root (not the backend dir)
+# so it must `cd kitapandu-backend` first. `--max-workers 2` caps the RAM
+# budget per the original audit. `--no-coverage` treats every discovered
+# site as in-scope (unit-only run; coverage is not a gate here).
+#
+# Output is piped to stdout — JSON-like lines for each mutant plus a
+# final `[mutator] <killed>/<total>` summary line that exposes the kill
+# rate. Exit code mirrors mutator's: 0 every mutant killed (or nothing
+# to run), 2 baseline tests failed, 3 at least one mutant survived.
+.PHONY: mutation
+mutation:              ## run mutator against the unit-test suite
+	cd /home/panduai/repo/pandu-ai-id/kitapandu-school-management && \
+	mutator --root . \
+		--test-command "bash -c 'cd kitapandu-backend && python3 -m pytest tests/unit -q --no-header --no-cov'" \
+		--max-workers 2 \
+		--no-coverage 2>&1
+
+# Harness report target.
+#
+# Runs the three harness tools in order (crapper for CRAP, dryer for
+# structural duplication, mutator for change resilience) and verifies
+# .metrics/harness-report.md is in place. All raw artefacts land in
+# .metrics/ (crap.edn, dry.edn, mutate/*.edn, mutator.txt, ...).
+#
+# The verdict document .metrics/harness-report.md is written by the
+# unclebob-metrics-assessor skill from those raw artefacts — `make`
+# alone does not author prose. Re-run the skill (or update the file by
+# hand using the existing template) to refresh the verdict.
+#
+# .metrics/ is git-ignored; only harness-report.md is tracked.
+.PHONY: harness-report
+harness-report: crapper dryer mutation   ## run crapper + dryer + mutator; verify report
+	@echo "[harness-report] raw artefacts written to .metrics/"
+	@test -s .metrics/harness-report.md \
+		|| { echo "ERROR: .metrics/harness-report.md missing or empty — run the unclebob-metrics-assessor skill to author it from .metrics/*"; exit 1; }
+	@echo "[harness-report] verdict present: .metrics/harness-report.md"
+
+.PHONY: crapper
+crapper:               ## run crapper (CRAP metric) over the backend
+	cd /home/panduai/repo/pandu-ai-id/kitapandu-school-management && crapper --root .
+
+.PHONY: dryer
+dryer:                 ## run dryer (structural duplication) over the backend
+	cd /home/panduai/repo/pandu-ai-id/kitapandu-school-management && dryer --root .
