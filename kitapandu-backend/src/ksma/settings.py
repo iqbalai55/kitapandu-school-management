@@ -48,6 +48,13 @@ class Settings(BaseSettings):
     # --- File upload (NFR07) ---
     max_file_bytes: int = 10 * 1024 * 1024  # 10 MB initial proposal
 
+    # --- Admin token (ADR-0007) ---
+    # Env var KITAPANDU_ADMIN_TOKEN guards /api/v1/admin/* (PLT-A01 tenant
+    # bootstrap + PLT-A03/04 platform-operator actions). Empty (the default)
+    # means dev mode: the middleware logs a WARNING at startup and lets admin
+    # traffic through. Any staging/production deployment MUST set it.
+    admin_token: str | None = ""
+
     # --- Time (per docs: Asia/Jakarta proposed for pilot) ---
     default_timezone: str = "Asia/Jakarta"
 

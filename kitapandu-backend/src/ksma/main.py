@@ -30,6 +30,10 @@ from ksma.portal.interface import router as portal_router
 from ksma.program.interface import router as program_router
 from ksma.session.interface import router as session_router
 from ksma.settings import get_settings
+from ksma.shared.auth.admin_token_middleware import (
+    AdminTokenMiddleware,
+    init_admin_token_policy,
+)
 from ksma.shared.errors import DomainError
 from ksma.shared.events import DomainEvent, bus
 
@@ -74,6 +78,16 @@ def create_app() -> FastAPI:
                 "correlation_id": str(uuid4()),
             },
         )
+
+    # --- Admin token gate (ADR-0007) ----------------------------------------
+    #
+    # /api/v1/admin/* (PLT-A01 tenant bootstrap, PLT-A03/04 platform-operator
+    # actions) is gated by KITAPANDU_ADMIN_TOKEN. The policy is built ONCE here
+    # and stashed on app.state; the middleware only reads it. Unset token => a
+    # single startup WARNING and an open surface (dev mode).
+
+    init_admin_token_policy(app, settings.admin_token)
+    app.add_middleware(AdminTokenMiddleware)
 
     # --- Routers ------------------------------------------------------------
 
