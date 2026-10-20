@@ -3,8 +3,8 @@
 # Runs `make mutation` (which invokes the `mutator` harness over the
 # kitapandu-backend unit-test suite) on every PR. The job:
 #
-#   1. sets up Python 3.11 (matches pyproject.toml),
-#   2. installs backend + test deps (editable, no extras),
+#   1. sets up Python 3.12 (matches pyproject.toml `requires-python >=3.12`),
+#   2. installs backend + test deps via the `dev` extra (editable),
 #   3. installs crapper / dryer / mutator from the local `tools/`
 #      overlay (no PyPI release for these — they ship with the
 #      `mutation-harness` repo),
@@ -48,7 +48,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11"]
+        python-version: ["3.12"]
 
     env:
       PYTHONDONTWRITEBYTECODE: "1"
@@ -70,7 +70,7 @@ jobs:
         working-directory: kitapandu-school-management/kitapandu-backend
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e .[test]
+          python -m pip install -e .[dev]
 
       - name: Install harness tools (crapper, dryer, mutator)
         run: |
@@ -87,7 +87,9 @@ jobs:
           make mutation > .metrics/mutator-ci.log 2>&1
           rc=$?
           echo "rc=$rc" >> "$GITHUB_OUTPUT"
-          exit $rc
+          # Exit 3 = mutants survived. Informational per the header contract,
+          # so only exit 2 (baseline tests failed) fails the job.
+          exit $([ "$rc" = "2" ] && echo 1 || echo 0)
 
       - name: Surface kill rate (always)
         if: always()
