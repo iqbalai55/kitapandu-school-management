@@ -115,7 +115,7 @@ async def _audit(
     """
     from ksma.shared.audit import write_audit_record
 
-    role_code = ctx.role_codes[0] if ctx.role_codes else "unknown"
+    role_code = ctx.primary_role_code
     await write_audit_record(
         session,
         action_id=action_id,

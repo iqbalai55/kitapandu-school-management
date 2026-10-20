@@ -107,8 +107,8 @@ class _CorrelationCtxStub:
     pin a specific correlation value construct this stub so the decorator's
     ``getattr(ctx, "correlation_id", "unknown")`` resolves to the test value.
     The audit helper accesses ``account_id``, ``membership_id``, ``tenant_id``
-    and ``role_codes`` by dot access — no isinstance check — so a structurally
-    compatible stub drives the wrapper end-to-end.
+    and ``primary_role_code`` by dot access — no isinstance check — so a
+    structurally compatible stub drives the wrapper end-to-end.
     """
 
     account_id: UUID | None
@@ -119,6 +119,11 @@ class _CorrelationCtxStub:
     authz_revision: int
     role_codes: tuple[str, ...] = ()
     correlation_id: str = "unknown"
+
+    @property
+    def primary_role_code(self) -> str:
+        """Mirror of ``TenantContext.primary_role_code``."""
+        return self.role_codes[0] if self.role_codes else "unknown"
 
 
 def _ctx(**overrides: Any) -> TenantContext:
@@ -210,7 +215,7 @@ class TestAuditedSuccessPath:
         assert auth == {
             "kind": "membership",
             "id": str(ctx.membership_id),
-            "role_code": ctx.role_codes[0] if ctx.role_codes else "unknown",
+            "role_code": ctx.primary_role_code,
         }
         # correlation_id comes from ctx (TenantContext has no correlation_id,
         # so getattr falls back to "unknown" — that is the documented default).
