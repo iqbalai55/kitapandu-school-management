@@ -53,10 +53,10 @@ class ServiceRequestRow(Base):
     assigned_membership_id: Mapped[UUID | None] = mapped_column(PgUUID(as_uuid=True), ForeignKey("membership.id"), nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     resolution: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    created_by: Mapped[str] = mapped_column(Text, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    updated_by: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    created_by: Mapped[str] = mapped_column(Text, nullable=False, default="system")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    updated_by: Mapped[str] = mapped_column(Text, nullable=False, default="system")
 
 
 class InternalNotificationRow(Base):
@@ -85,7 +85,7 @@ class CommunicationPreferenceRow(Base):
     channel: Mapped[str] = mapped_column(String(32), nullable=False)
     enabled: Mapped[bool] = mapped_column(nullable=False, default=True)
     contact_reference: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
 
 
 # ---------------------------------------------------------------------------
@@ -106,8 +106,8 @@ class AttachmentRow(Base):
     content_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
     check_status: Mapped[str] = mapped_column(String(32), nullable=False)
     retention_policy_id: Mapped[UUID | None] = mapped_column(PgUUID(as_uuid=True), ForeignKey("policy_version.id"), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    created_by: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    created_by: Mapped[str] = mapped_column(Text, nullable=False, default="system")
 
     __table_args__ = (
         CheckConstraint(
@@ -136,8 +136,8 @@ class ImportBatchRow(Base):
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     commit_request_id: Mapped[UUID | None] = mapped_column(PgUUID(as_uuid=True), nullable=True)
     counts: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
 
     __table_args__ = (
         CheckConstraint(
@@ -187,8 +187,8 @@ class ExportJobRow(Base):
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     result_attachment_id: Mapped[UUID | None] = mapped_column(PgUUID(as_uuid=True), ForeignKey("attachment.id"), nullable=True)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
 
     __table_args__ = (
         CheckConstraint(
@@ -216,7 +216,7 @@ class MetricDefinitionRow(Base):
     # effective_range is a tstzrange; SQLAlchemy will marshal via psycopg/asyncpg.
     effective_range: Mapped[Any] = mapped_column(TSTZRANGE, nullable=False)
     approval: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
 
     __table_args__ = (
         UniqueConstraint("tenant_id", "metric_code", "version_no"),
@@ -247,7 +247,7 @@ class OperationalRunRow(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     evidence: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
 
     __table_args__ = (
         CheckConstraint(
@@ -283,8 +283,8 @@ class BackgroundJobRow(Base):
     attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     result_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
 
     __table_args__ = (
         CheckConstraint(

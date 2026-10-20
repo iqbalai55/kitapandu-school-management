@@ -40,10 +40,10 @@ class AssessmentRow(Base):
     assessment_date: Mapped[date] = mapped_column(Date, nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     supersedes_id: Mapped[UUID | None] = mapped_column(PgUUID(as_uuid=True), ForeignKey("assessment.id"), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    created_by: Mapped[str] = mapped_column(Text, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    updated_by: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    created_by: Mapped[str] = mapped_column(Text, nullable=False, default="system")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    updated_by: Mapped[str] = mapped_column(Text, nullable=False, default="system")
 
     __table_args__ = (
         CheckConstraint(
@@ -69,10 +69,10 @@ class AssessmentResultRow(Base):
     narrative_value: Mapped[str | None] = mapped_column(Text, nullable=True)
     result_state: Mapped[str] = mapped_column(String(32), nullable=False)
     follow_up: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    created_by: Mapped[str] = mapped_column(Text, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    updated_by: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    created_by: Mapped[str] = mapped_column(Text, nullable=False, default="system")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    updated_by: Mapped[str] = mapped_column(Text, nullable=False, default="system")
 
     __table_args__ = (
         UniqueConstraint("assessment_id", "indicator_id"),
@@ -101,8 +101,8 @@ class AssessmentEvidenceRow(Base):
     attachment_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), nullable=False)
     caption: Mapped[str | None] = mapped_column(Text, nullable=True)
     visibility: Mapped[str] = mapped_column(String(32), nullable=False, default="internal_assessment")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    created_by: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    created_by: Mapped[str] = mapped_column(Text, nullable=False, default="system")
 
     __table_args__ = (
         CheckConstraint(
@@ -129,10 +129,10 @@ class ReportPublicationRow(Base):
     attachment_id: Mapped[UUID | None] = mapped_column(PgUUID(as_uuid=True), nullable=True)
     supersedes_id: Mapped[UUID | None] = mapped_column(PgUUID(as_uuid=True), ForeignKey("report_publication.id"), nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    created_by: Mapped[str] = mapped_column(Text, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    updated_by: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    created_by: Mapped[str] = mapped_column(Text, nullable=False, default="system")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    updated_by: Mapped[str] = mapped_column(Text, nullable=False, default="system")
 
     __table_args__ = (
         UniqueConstraint("enrollment_id", "publication_no"),
@@ -155,10 +155,10 @@ class CompletionDecisionRow(Base):
     policy_id: Mapped[UUID | None] = mapped_column(PgUUID(as_uuid=True), ForeignKey("policy_version.id"), nullable=True)
     decision: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     supersedes_id: Mapped[UUID | None] = mapped_column(PgUUID(as_uuid=True), ForeignKey("completion_decision.id"), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    created_by: Mapped[str] = mapped_column(Text, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    updated_by: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    created_by: Mapped[str] = mapped_column(Text, nullable=False, default="system")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    updated_by: Mapped[str] = mapped_column(Text, nullable=False, default="system")
 
     __table_args__ = (
         CheckConstraint(
@@ -182,8 +182,8 @@ class CertificateRow(Base):
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     replacement_id: Mapped[UUID | None] = mapped_column(PgUUID(as_uuid=True), ForeignKey("certificate.id"), nullable=True)
     revocation: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    created_by: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    created_by: Mapped[str] = mapped_column(Text, nullable=False, default="system")
 
     __table_args__ = (
         UniqueConstraint("tenant_id", "numbering_scope", "certificate_no"),
