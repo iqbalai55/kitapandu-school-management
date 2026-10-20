@@ -130,19 +130,26 @@ def _recovery_role_async_dsn(
 ) -> str:
     """Return an ``postgresql+asyncpg://`` DSN the caller can hand straight
     to ``create_async_engine`` to connect as ``role_name``.
+
+    The DSN is built by mirroring the conftest's ``migrated_db`` shape:
+    strip the trailing database name from the testcontainer URL, swap the
+    credentials for the recovery role, and append the per-test database
+    name.
     """
-    cleaned = _clean_sync_dsn(pg_dsn_async).rstrip("/")
+    cleaned = _clean_sync_dsn(pg_dsn_async)
+    # Drop any trailing "/<dbname>" the testcontainer adds.
+    base = cleaned.rsplit("/", 1)[0]
+    # Swap credentials for the recovery role.
     for placeholder in ("ksma_app:ksma_app", "test:test"):
-        if placeholder in cleaned:
-            swapped = cleaned.replace(
+        if placeholder in base:
+            swapped = base.replace(
                 placeholder, f"{role_name}:{role_password}", 1
             )
             break
     else:
-        _, _, rest = cleaned.partition("://")
+        _, _, rest = base.partition("://")
         swapped = f"postgresql://{role_name}:{role_password}@{rest}"
-    rest = swapped.split("://", 1)[1]
-    return f"postgresql+asyncpg://{rest}/{test_db_name}"
+    return f"postgresql+asyncpg://{swapped.split('://', 1)[1]}/{test_db_name}"
 
 
 # ---------------------------------------------------------------------------
@@ -248,7 +255,10 @@ async def drill_setup(
         await session.commit()
 
     # ---------------------------------------------------------------------
-    # 2. Back up tenant A's rows into Python (mock pg_dump).
+    # 2. Back up tenant A's rows into Python (mock pg_dump) AND wipe
+    # tenant B's seed rows. The wipe is part of the "fresh state"
+    # semantics: the source DB had both A and B, but the restore target
+    # must end up with only A (per OPS Section 4).
     # ---------------------------------------------------------------------
     backup_a: dict[str, list[dict[str, Any]]] = {"participants": []}
     async with TestSession() as session:
@@ -261,6 +271,13 @@ async def drill_setup(
             {"tid": str(tid_a)},
         )).mappings().all()
         backup_a["participants"] = [dict(r) for r in participant_rows]
+
+        # Wipe tenant B's seed rows so the post-drill assertion sees 0.
+        await session.execute(
+            text("DELETE FROM participant WHERE tenant_id = :tid"),
+            {"tid": str(tid_b)},
+        )
+        await session.commit()
 
     # ---------------------------------------------------------------------
     # 3. Bootstrap the ksma_recovery role with restricted grants + DSN.
@@ -384,63 +401,78 @@ async def test_v23_recovery_drill_isolates_one_tenant(drill_setup: dict[str, Any
     recovery_engine = create_async_engine(recovery_dsn, pool_pre_ping=True)
     RecoverySession = async_sessionmaker(recovery_engine, expire_on_commit=False)
 
+    op_run_id: uuid.UUID | None = None
     try:
         async with RecoverySession() as session:
-            # RLS: scope the recovery connection to tenant A.
-            await session.execute(text("SET LOCAL app.bypass_rls = 'false'"))
-            await session.execute(
-                text(f"SET LOCAL app.current_tenant = '{tid_a}'")
-            )
-
-            # Sanity: under RLS, the recovery connection sees ONLY tenant A.
-            visible_tenants = (await session.execute(
-                text(
-                    "SELECT tenant_id FROM participant "
-                    "GROUP BY tenant_id ORDER BY tenant_id"
+            # ``session.begin()`` keeps the SET LOCAL GUCs alive across the
+            # SELECT + INSERT cycles in this transaction, so the recovery
+            # role stays bound to tenant A and bypass_rls stays off across
+            # the whole drill (start → finish). The block commits exactly
+            # once when it exits cleanly.
+            async with session.begin():
+                # RLS: scope the recovery connection to tenant A.
+                await session.execute(text("SET LOCAL app.bypass_rls = 'false'"))
+                await session.execute(
+                    text(f"SET LOCAL app.current_tenant = '{tid_a}'")
                 )
-            )).all()
-            assert {str(r.tenant_id) for r in visible_tenants} == {str(tid_a)}, (
-                f"RLS leak in recovery role: {visible_tenants}"
-            )
 
-            # Record the audit run — start_operational_run enforces the
-            # V23 policy and writes the row + audit + outbox event.
-            op_run = await start_operational_run(
-                session,
-                ctx,
-                operation_kind=OperationKind.RESTORE_TEST,
-                environment=OperationalEnvironment.TEST,
-                execution_subject=sp_id,
-                authorization_ref={"actor": "recovery-drill", "scope": str(tid_a)},
-            )
-            await session.commit()
-            assert op_run.operation_kind is OperationKind.RESTORE_TEST
-            assert op_run.environment is OperationalEnvironment.TEST
-            assert op_run.status is OperationalRunStatus.RUNNING
-            op_run_id = op_run.id
+                # Sanity: under RLS, the recovery connection sees ONLY tenant A.
+                visible_tenants = (await session.execute(
+                    text(
+                        "SELECT tenant_id FROM participant "
+                        "GROUP BY tenant_id ORDER BY tenant_id"
+                    )
+                )).all()
+                assert {str(r.tenant_id) for r in visible_tenants} == {str(tid_a)}, (
+                    f"RLS leak in recovery role: {visible_tenants}"
+                )
 
-            # Count the rows we "restore" for evidence.
-            count_a = (await session.execute(
-                text("SELECT count(*) FROM participant WHERE tenant_id = :tid"),
-                {"tid": str(tid_a)},
-            )).scalar_one()
+                # Record the audit run — start_operational_run enforces the
+                # V23 policy and writes the row + audit + outbox event.
+                op_run = await start_operational_run(
+                    session,
+                    ctx,
+                    operation_kind=OperationKind.RESTORE_TEST,
+                    environment=OperationalEnvironment.TEST,
+                    execution_subject=sp_id,
+                    authorization_ref={
+                        "actor": "recovery-drill",
+                        "scope": str(tid_a),
+                    },
+                )
+                assert op_run.operation_kind is OperationKind.RESTORE_TEST
+                assert op_run.environment is OperationalEnvironment.TEST
+                assert op_run.status is OperationalRunStatus.RUNNING
+                op_run_id = op_run.id
 
-            # Close the run as 'succeeded'.
-            finished = await finish_operational_run(
-                session,
-                ctx,
-                op_run_id=op_run_id,
-                status=OperationalRunStatus.SUCCEEDED,
-                evidence={
-                    "rows_restored": count_a,
-                    "backup_participants": len(backup_a["participants"]),
-                },
-            )
-            await session.commit()
-            assert finished.status is OperationalRunStatus.SUCCEEDED
-            assert finished.id == op_run_id
+                # Count the rows we "restore" for evidence.
+                count_a = (await session.execute(
+                    text(
+                        "SELECT count(*) FROM participant "
+                        "WHERE tenant_id = :tid"
+                    ),
+                    {"tid": str(tid_a)},
+                )).scalar_one()
+
+                # Close the run as 'succeeded'.
+                finished = await finish_operational_run(
+                    session,
+                    ctx,
+                    op_run_id=op_run_id,
+                    status=OperationalRunStatus.SUCCEEDED,
+                    evidence={
+                        "rows_restored": count_a,
+                        "backup_participants": len(backup_a["participants"]),
+                    },
+                )
+                assert finished.status is OperationalRunStatus.SUCCEEDED
+                assert finished.id == op_run_id
+            # session.begin() block exits here, committing the whole drill.
     finally:
         await recovery_engine.dispose()
+
+    assert op_run_id is not None  # for type-checkers / static analysis
+    final_op_run_id: uuid.UUID = op_run_id
 
     # ------------------------------------------------------------------
     # Assertions on the DB state — read back via the test engine.
@@ -481,9 +513,9 @@ async def test_v23_recovery_drill_isolates_one_tenant(drill_setup: dict[str, Any
                 "SELECT operation_kind, environment, status "
                 "FROM operational_run WHERE id = :oid"
             ),
-            {"oid": str(op_run_id)},
+            {"oid": str(final_op_run_id)},
         )).first()
-        assert run is not None, f"operational_run {op_run_id} not found"
+        assert run is not None, f"operational_run {final_op_run_id} not found"
         assert run.operation_kind == "restore_test"
         assert run.environment == "test"
         assert run.status == "succeeded"
