@@ -24,6 +24,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, TSTZRANGE
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
@@ -41,7 +42,8 @@ class Base(DeclarativeBase):
 
 class ServiceRequestRow(Base):
     __tablename__ = "service_request"
-    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True)
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True,
+        server_default=text("ksma_uuid()"))
     tenant_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("tenant.id"), nullable=False)
     requester_account_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("account.id"), nullable=False)
     participant_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("participant.id"), nullable=False)
@@ -59,7 +61,8 @@ class ServiceRequestRow(Base):
 
 class InternalNotificationRow(Base):
     __tablename__ = "internal_notification"
-    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True)
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True,
+        server_default=text("ksma_uuid()"))
     tenant_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("tenant.id"), nullable=False)
     recipient_account_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("account.id"), nullable=False)
     source_ref: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
@@ -73,7 +76,8 @@ class InternalNotificationRow(Base):
 
 class CommunicationPreferenceRow(Base):
     __tablename__ = "communication_preference"
-    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True)
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True,
+        server_default=text("ksma_uuid()"))
     tenant_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("tenant.id"), nullable=False)
     account_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("account.id"), nullable=False)
     participant_id: Mapped[UUID | None] = mapped_column(PgUUID(as_uuid=True), ForeignKey("participant.id"), nullable=True)
@@ -91,7 +95,8 @@ class CommunicationPreferenceRow(Base):
 
 class AttachmentRow(Base):
     __tablename__ = "attachment"
-    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True)
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True,
+        server_default=text("ksma_uuid()"))
     tenant_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("tenant.id"), nullable=False)
     owner_ref: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     storage_key: Mapped[str] = mapped_column(Text, nullable=False)
@@ -120,7 +125,8 @@ class AttachmentRow(Base):
 
 class ImportBatchRow(Base):
     __tablename__ = "import_batch"
-    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True)
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True,
+        server_default=text("ksma_uuid()"))
     tenant_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("tenant.id"), nullable=False)
     requested_by: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("account.id"), nullable=False)
     dataset_kind: Mapped[str] = mapped_column(Text, nullable=False)
@@ -143,7 +149,8 @@ class ImportBatchRow(Base):
 
 class ImportRowResultRow(Base):
     __tablename__ = "import_row_result"
-    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True)
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True,
+        server_default=text("ksma_uuid()"))
     tenant_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("tenant.id"), nullable=False)
     import_batch_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("import_batch.id"), nullable=False)
     row_no: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -169,7 +176,8 @@ class ImportRowResultRow(Base):
 
 class ExportJobRow(Base):
     __tablename__ = "export_job"
-    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True)
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True,
+        server_default=text("ksma_uuid()"))
     tenant_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("tenant.id"), nullable=False)
     requester_account_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("account.id"), nullable=False)
     dataset_kind: Mapped[str] = mapped_column(Text, nullable=False)
@@ -197,7 +205,8 @@ class ExportJobRow(Base):
 
 class MetricDefinitionRow(Base):
     __tablename__ = "metric_definition"
-    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True)
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True,
+        server_default=text("ksma_uuid()"))
     tenant_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("tenant.id"), nullable=False)
     metric_code: Mapped[str] = mapped_column(Text, nullable=False)
     version_no: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -227,7 +236,8 @@ class MetricDefinitionRow(Base):
 
 class OperationalRunRow(Base):
     __tablename__ = "operational_run"
-    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True)
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True,
+        server_default=text("ksma_uuid()"))
     tenant_id: Mapped[UUID | None] = mapped_column(PgUUID(as_uuid=True), ForeignKey("tenant.id"), nullable=True)
     operation_kind: Mapped[str] = mapped_column(String(32), nullable=False)
     environment: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -262,7 +272,8 @@ class OperationalRunRow(Base):
 
 class BackgroundJobRow(Base):
     __tablename__ = "background_job"
-    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True)
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True,
+        server_default=text("ksma_uuid()"))
     tenant_id: Mapped[UUID | None] = mapped_column(PgUUID(as_uuid=True), ForeignKey("tenant.id"), nullable=True)
     event_id: Mapped[UUID | None] = mapped_column(PgUUID(as_uuid=True), nullable=True)
     job_kind: Mapped[str] = mapped_column(Text, nullable=False)

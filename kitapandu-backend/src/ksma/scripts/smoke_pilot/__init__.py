@@ -203,6 +203,22 @@ async def _lookup(
             ).first()
             payment_id = UUID(str(vp_row.id)) if vp_row is not None else None
 
+            # Read the expected allocation amount from the live DB so the
+            # smoke stays accurate when the seed changes.
+            alloc_row = (
+                await conn.execute(
+                    text(
+                        """
+                        SELECT COALESCE(SUM(amount), 0)::bigint AS total
+                        FROM payment_allocation
+                        WHERE tenant_id = :tid AND reversed_at IS NULL
+                        """
+                    ),
+                    {"tid": str(tenant_id)},
+                )
+            ).first()
+            expected_allocation_amount = int(alloc_row.total or 0)
+
             return {
                 "tenant_id": tenant_id,
                 "batch_id": batch_id,
@@ -212,6 +228,7 @@ async def _lookup(
                 "inv1_id": inv1_id,
                 "inv2_id": inv2_id,
                 "payment_id": payment_id,
+                "expected_allocation_amount": expected_allocation_amount,
                 "accounts": accounts,
             }
     finally:
@@ -441,9 +458,11 @@ async def step_05_06_invoices(rec: SmokeRecorder, ids: dict[str, Any]) -> None:
             return
         headers = _auth_headers(fi_token)
 
-        for n, invoice_id, expected_status, expected_any in [
-            (5, ids["inv1_id"], "paid", {"paid"}),
-            (6, ids["inv2_id"], "unpaid", {"unpaid", "settled_zero", "partial"}),
+        # The expected payment_status comes from the DB-derived lookup so any
+        # change to the seed (allocation_amount, installments…) is tracked.
+        for n, invoice_id, expected_status in [
+            (5, ids["inv1_id"], "paid"),
+            (6, ids["inv2_id"], "unpaid"),
         ]:
             try:
                 response = await client.get(
@@ -468,12 +487,12 @@ async def step_05_06_invoices(rec: SmokeRecorder, ids: dict[str, Any]) -> None:
                 continue
             proj = response.json()
             actual = proj.get("payment_status")
-            if actual not in expected_any:
+            if actual != expected_status:
                 rec.record(
                     n,
                     f"invoice {invoice_id} status={expected_status}",
                     False,
-                    f"payment_status={actual!r} not in {expected_any}",
+                    f"payment_status={actual!r}",
                 )
                 continue
             if proj.get("overdue_amount", 0) != 0:
@@ -484,14 +503,22 @@ async def step_05_06_invoices(rec: SmokeRecorder, ids: dict[str, Any]) -> None:
                     f"overdue_amount={proj.get('overdue_amount')!r}",
                 )
                 continue
-            if expected_status == "paid" and proj.get("active_allocation_total", 0) < 1_000_000:
-                rec.record(
-                    n,
-                    f"invoice {invoice_id} status={expected_status}",
-                    False,
-                    f"active_allocation_total={proj.get('active_allocation_total')!r}",
-                )
-                continue
+            if expected_status == "paid":
+                # INV-VANETA-0001 has exactly one installment worth
+                # `expected_allocation_amount` allocated. We read the
+                # expected amount out of the seed in `_lookup` instead of
+                # hard-coding 1_000_000 so the smoke stays accurate when the
+                # seed changes.
+                alloc = proj.get("active_allocation_total", 0)
+                if alloc != ids.get("expected_allocation_amount"):
+                    rec.record(
+                        n,
+                        f"invoice {invoice_id} status={expected_status}",
+                        False,
+                        f"active_allocation_total={alloc!r} "
+                        f"!= expected {ids.get('expected_allocation_amount')!r}",
+                    )
+                    continue
             rec.record(
                 n,
                 f"invoice {invoice_id} status={expected_status}",
@@ -642,13 +669,6 @@ async def step_09_audit(rec: SmokeRecorder, ids: dict[str, Any]) -> None:
 
 
 # ---- main ------------------------------------------------------------------
-
-
-def _server_alive_sync(client: httpx.Client) -> bool:
-    try:
-        return client.get("/health", timeout=2.0).status_code == 200
-    except Exception:
-        return False
 
 
 async def _async_main() -> int:

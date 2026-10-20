@@ -160,6 +160,51 @@ class InternalNotificationRepository:
         )
         return result.rowcount > 0
 
+    async def write_or_ignore(
+        self,
+        *,
+        recipient_account_id: UUID,
+        event_id: UUID,
+        notification_kind: str,
+        source_ref: dict[str, Any],
+        summary: str,
+    ) -> bool:
+        """INSERT ``internal_notification`` ON CONFLICT DO NOTHING.
+
+        Honours the ``(tenant_id, recipient_account_id, event_id,
+        notification_kind)`` UNIQUE constraint — V21 dedup. Returns ``True``
+        when the row was actually inserted, ``False`` when the (tenant,
+        recipient, event, kind) tuple already existed and the insert was
+        suppressed.
+
+        This is the primitive used by the audit-projection consumer
+        (``portal.application.dispatch_event_to_inbox``).
+        """
+        result = await self.session.execute(
+            text(
+                """
+                INSERT INTO internal_notification
+                  (tenant_id, recipient_account_id, source_ref, event_id,
+                   notification_kind, summary, delivery_state, occurred_at)
+                VALUES
+                  (:tid, :recipient, CAST(:src AS JSONB), :event,
+                   :kind, :summary, 'available', now())
+                ON CONFLICT (tenant_id, recipient_account_id, event_id, notification_kind)
+                DO NOTHING
+                RETURNING id
+                """
+            ),
+            {
+                "tid": str(self.tenant_id),
+                "recipient": str(recipient_account_id),
+                "src": _json(source_ref),
+                "event": str(event_id) if event_id else None,
+                "kind": notification_kind,
+                "summary": summary,
+            },
+        )
+        return result.rowcount > 0
+
     async def list_for_recipient(
         self, recipient_account_id: UUID, *, limit: int = 50
     ) -> list[InternalNotification]:

@@ -24,6 +24,13 @@ dependencies = [
   "structlog>=24.4",
   "httpx>=0.28",
   "email-validator>=2.2",
+  # --- Observability (P4.1) — OpenTelemetry SDK + FastAPI/SQLAlchemy instrumentation.
+  # All gated behind KITAPANDU_OTEL_ENABLED=false (default off; zero overhead when off).
+  "opentelemetry-api>=1.27,<2",
+  "opentelemetry-sdk>=1.27,<2",
+  "opentelemetry-instrumentation-fastapi>=0.48b0,<1",
+  "opentelemetry-instrumentation-sqlalchemy>=0.48b0,<1",
+  "opentelemetry-exporter-otlp-proto-grpc>=1.27,<2",
 ]
 
 [project.optional-dependencies]

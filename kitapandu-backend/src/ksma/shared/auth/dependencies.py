@@ -96,13 +96,24 @@ async def tenant_context_dep(
     request handler via ``session_scope``.
     """
     sub = claims.get("sub")
-    tenant_id = claims.get("tz_current_tenant")
+    tenant_id_raw = claims.get("tz_current_tenant")
     authz_rev = claims.get("tz_authz_revision")
-    if not sub or not tenant_id or authz_rev is None:
+    if not sub or not tenant_id_raw or authz_rev is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={"code": "INVALID_CLAIMS"},
         )
+    # Defense-in-depth: even though the JWT signature is verified before this
+    # runs, refuse any non-UUID claim with a clean 401 so a stale or malformed
+    # token can't surface as a Postgres `invalid input syntax for type uuid`
+    # 500 from set_current_tenant.
+    try:
+        tenant_id = UUID(str(tenant_id_raw))
+    except (ValueError, TypeError):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"code": "INVALID_CLAIMS"},
+        ) from None
     async with session_scope() as session:
         # Load the account + verify authz_revision.
         from sqlalchemy import select

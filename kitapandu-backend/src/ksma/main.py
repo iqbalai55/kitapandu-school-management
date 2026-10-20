@@ -24,15 +24,23 @@ from ksma.assessment.interface import router as assessment_router
 from ksma.batch.interface import router as batch_router
 from ksma.finance.interface import router as finance_router
 from ksma.identity.interface import router as identity_router
+from ksma.observability import setup_tracing
+from ksma.observability.middleware import CorrelationIdMiddleware
 from ksma.operations.interface import router as operations_router
 from ksma.participant.interface import router as participant_router
 from ksma.portal.interface import router as portal_router
+from ksma.portal.interface.audit_projection import (
+    register_audit_projection_subscribers,
+)
 from ksma.program.interface import router as program_router
 from ksma.session.interface import router as session_router
 from ksma.settings import get_settings
+from ksma.shared.auth.admin_token_middleware import (
+    AdminTokenMiddleware,
+    init_admin_token_policy,
+)
 from ksma.shared.errors import DomainError
-from ksma.shared.events import DomainEvent, bus
-
+from ksma.shared.persistence import engine as _make_engine
 
 logger = logging.getLogger("ksma.main")
 
@@ -46,6 +54,19 @@ def create_app() -> FastAPI:
         docs_url="/docs",
         redoc_url="/redoc",
     )
+
+    # --- Correlation-id middleware (always installed so the contract holds
+    # regardless of whether tracing is enabled). Must be added before any
+    # middleware that wants to read request.state.correlation_id.
+
+    app.add_middleware(CorrelationIdMiddleware)
+
+    # --- OpenTelemetry (P4.1) — gated by settings.otel_enabled ----------------
+    # When off (default) the call is a strict no-op. When on, instruments
+    # FastAPI + the global AsyncEngine + configures the OTLP exporter.
+
+    if settings.otel_enabled:
+        setup_tracing(app, _make_engine())
 
     # --- Exception handlers -------------------------------------------------
 
@@ -74,6 +95,16 @@ def create_app() -> FastAPI:
                 "correlation_id": str(uuid4()),
             },
         )
+
+    # --- Admin token gate (ADR-0007) ----------------------------------------
+    #
+    # /api/v1/admin/* (PLT-A01 tenant bootstrap, PLT-A03/04 platform-operator
+    # actions) is gated by KITAPANDU_ADMIN_TOKEN. The policy is built ONCE here
+    # and stashed on app.state; the middleware only reads it. Unset token => a
+    # single startup WARNING and an open surface (dev mode).
+
+    init_admin_token_policy(app, settings.admin_token)
+    app.add_middleware(AdminTokenMiddleware)
 
     # --- Routers ------------------------------------------------------------
 
@@ -122,26 +153,16 @@ def create_app() -> FastAPI:
             "docs": "/docs",
         }
 
-    # --- Outbox event → InternalNotification subscriber (pilot stub) -------
+    # --- Outbox event → InternalNotification subscriber (audit projection) ----
     #
-    # Subscribes to a few event types so portal/inbox has something to render.
-    # Real production would queue to external channels per Q09.
+    # Per spec 000 / issue #31 P4.1 sub-area #2: when finance / session /
+    # reporting emit a past-tense event, the portal's audit-projection
+    # consumer writes one ``internal_notification`` row per recipient, deduped
+    # on the UNIQUE (tenant_id, recipient_account_id, event_id,
+    # notification_kind) constraint (V21). See
+    # ``ksma.portal.interface.audit_projection``.
 
-    def _on_event_record_notification(event: DomainEvent) -> None:
-        # The actual INSERT happens in the portal.application subscriber when
-        # the outbox worker dispatches it (in the same DB transaction). This
-        # in-process stub is left empty intentionally — it would only matter
-        # if the same-tx dispatcher also wrote notifications.
-        return
-
-    for evt_type in (
-        "InvoiceIssued",
-        "PaymentVerified",
-        "FundsAllocated",
-        "SessionScheduled",
-        "ReportPublished",
-    ):
-        bus().subscribe(DomainEvent, _on_event_record_notification)  # type: ignore[arg-type]
+    register_audit_projection_subscribers()
 
     return app
 
