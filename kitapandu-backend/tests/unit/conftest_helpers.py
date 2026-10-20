@@ -586,7 +586,7 @@ class FakeTenantContext:
     def build(self) -> TenantContext:
         """Build the frozen value object, applying the actor-kind invariants."""
         is_account = self._actor_kind is ActorKind.ACCOUNT
-        role_codes = (_code_of(self._role),) + tuple(_code_of(role) for role in self._extra_roles)
+        role_codes = (_code_of(self._role),) + tuple(_code_of(role) for role in self._extra_roles)  # noqa: RUF005
         return TenantContext(
             account_id=(self._account_id if self._account_id is not None else uuid4())
             if is_account
@@ -621,7 +621,7 @@ def tenant_context(role: RoleCode | str = RoleCode.AC, **overrides: Any) -> Tena
     return FakeTenantContext(role, **overrides).build()
 
 
-def _slug(value: Any) -> str:
+def _slug(value: Any) -> str:  # noqa: PLR0911
     """The canonical table-cell name for one boundary value."""
     if value is None:
         return "none"
