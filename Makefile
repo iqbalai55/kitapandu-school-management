@@ -53,24 +53,18 @@ seed:                  ## seed the Vaneta DEMO tenant
 # Lint target.
 #
 # P51 scoped this to `tests/unit` — the only tree the kill-mutants series
-# touches (src/ carries its own 629-violation pre-existing backlog). Note that
-# scoping alone does NOT make ruff green: `ruff check tests/unit` still reports
-# 405 violations, 351 of which the new P3x-P5x test files introduce (216x
-# PLC0415 import-outside-top-level, 43x UP017, 29x I001, 26x F401, ...).
+# touches (src/ carries its own 629-violation pre-existing backlog) — and, while
+# the lint-cleanup ticket was in flight, additionally bypassed the 22 rule
+# classes that already fired in that tree (216x PLC0415, 43x UP017, 29x I001,
+# 26x F401, ...).
 #
-# So this target bypasses exactly the 22 rule classes that already fire in that
-# tree and lets every *other* configured rule (E, F, B, UP, SIM, RUF, ASYNC, S,
-# PL) stay blocking. Net effect: red-on-arrival noise is silenced, and any new
-# violation in a rule outside that list still fails the build.
-#
-# Clearing the 22 bypassed classes is a separate follow-up (141 of the 405 are
-# `ruff check --fix`-able). Run the bypassed set explicitly with:
-#     cd kitapandu-backend && ruff check tests/unit --statistics
+# P60 cleared all 351 of those violations, so the bypass is gone: this target
+# now runs with **full enforcement** over every configured rule class (E, F, B,
+# UP, SIM, RUF, ASYNC, S, PL). Any new violation in `tests/unit` fails the build.
 .PHONY: lint
-lint:                  ## ruff check the unit-test suite (this branch's scope)
-	cd $(CURDIR)/kitapandu-backend && ruff check tests/unit --ignore PLC0415,UP017,F401,I001,SIM117,B017,F821,PLW0108,RUF059,F841,E702,PLR0912,RUF003,RUF005,SIM108,PLC0207,E402,F811,SIM105,PLR0911,RUF100,PLR1711,SIM300
-	@echo "[lint] ok — tests/unit clean outside the 22-class legacy bypass"
-	@echo "[lint] bypassed backlog: cd kitapandu-backend && ruff check tests/unit --statistics"
+lint:                  ## ruff check the unit-test suite with full enforcement
+	cd $(CURDIR)/kitapandu-backend && ruff check tests/unit
+	@echo "[lint] ok — full enforcement; no bypass"
 
 .PHONY: typecheck
 typecheck:             ## mypy the backend source tree
@@ -128,7 +122,9 @@ mutation:              ## run mutator against the unit-test suite
 # alone does not author prose. Re-run the skill (or update the file by
 # hand using the existing template) to refresh the verdict.
 #
-# .metrics/ is git-ignored; only harness-report.md is tracked.
+# .metrics/ holds only harness-report.md in git; the raw artefacts
+# (crap.edn, dry.edn, mutate/*.edn, mutator.txt, ...) are generated on
+# demand and intentionally left uncommitted.
 .PHONY: harness-report
 harness-report: crapper dryer mutation   ## run crapper + dryer + mutator; verify report
 	@echo "[harness-report] raw artefacts written to .metrics/"
