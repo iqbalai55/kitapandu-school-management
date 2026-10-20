@@ -203,6 +203,22 @@ async def _lookup(
             ).first()
             payment_id = UUID(str(vp_row.id)) if vp_row is not None else None
 
+            # Read the expected allocation amount from the live DB so the
+            # smoke stays accurate when the seed changes.
+            alloc_row = (
+                await conn.execute(
+                    text(
+                        """
+                        SELECT COALESCE(SUM(amount), 0)::bigint AS total
+                        FROM payment_allocation
+                        WHERE tenant_id = :tid AND reversed_at IS NULL
+                        """
+                    ),
+                    {"tid": str(tenant_id)},
+                )
+            ).first()
+            expected_allocation_amount = int(alloc_row.total or 0)
+
             return {
                 "tenant_id": tenant_id,
                 "batch_id": batch_id,
@@ -212,6 +228,7 @@ async def _lookup(
                 "inv1_id": inv1_id,
                 "inv2_id": inv2_id,
                 "payment_id": payment_id,
+                "expected_allocation_amount": expected_allocation_amount,
                 "accounts": accounts,
             }
     finally:
