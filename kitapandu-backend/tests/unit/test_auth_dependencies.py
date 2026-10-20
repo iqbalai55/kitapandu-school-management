@@ -166,16 +166,6 @@ def patch_session_scope(monkeypatch: pytest.MonkeyPatch, session: _FakeSession):
         yield session
 
     monkeypatch.setattr(deps_mod, "session_scope", _scope)
-    # Inject ``UUID`` into the module's namespace if it is not already there.
-    # ``tenant_context_dep`` uses ``UUID(...)`` directly without importing the
-    # symbol (a latent source-code defect that doesn't surface in production
-    # only because the symbol exists via Python's import-resolution machinery
-    # for module-globals — exercise the operator-flip invariants regardless
-    # by binding the symbol before the test runs). This monkeypatch also
-    # serves to verify the contract: a mutator that deletes the call would
-    # expose an unparseable tenant_id reaching ``set_current_tenant``.
-    if not hasattr(deps_mod, "UUID"):
-        monkeypatch.setattr(deps_mod, "UUID", UUID, raising=False)
 
 
 def patch_set_current_tenant(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
@@ -414,11 +404,10 @@ class TestTenantContextClaimValidation:
         dependency must NOT let a bad UUID reach ``set_current_tenant``
         (where it would surface as a 500).
 
-        NOTE: this branch currently raises ``NameError`` because the
-        production source uses ``UUID(...)`` without importing the symbol —
-        see the ``patch_session_scope`` helper for the workaround that
-        exercises the operator-flip invariants in the surrounding
-        ``ValueError``/``TypeError`` handler."""
+        Regression guard for #53: ``tenant_context_dep`` once called
+        ``UUID(...)`` without importing the symbol, so this branch raised
+        ``NameError`` instead of 401'ing. It now asserts against the real
+        production module with no ``UUID`` monkeypatch workaround."""
         ctx = await _invoke_tenant_context(
             monkeypatch,
             session=_FakeSession([]),
