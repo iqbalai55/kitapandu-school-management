@@ -99,34 +99,31 @@ class FakeAsyncSession:
         return result
 
 
-@dataclass(frozen=True, slots=True)
-class _CtxWithCorrelation(TenantContext):
-    """Test-only ``TenantContext`` extension that carries ``correlation_id`` and ``role_code``.
+@dataclass(frozen=True)
+class _CorrelationCtxStub:
+    """Stand-in for ``TenantContext`` that also carries ``correlation_id``.
 
-    The production ``TenantContext`` does not declare ``correlation_id`` (the
-    production code attaches it to ``request.state`` instead and relies on
-    ``getattr``); for the test we add the attribute as a subclass so we can
-    assert that the row's ``correlation_id`` echoes whatever was on ``ctx``.
-
-    We also add ``role_code`` because the audit code reads ``ctx.role_code``
-    (singular) when building the membership authorization_ref — a name that
-    does not exist on ``TenantContext`` (which exposes the plural tuple
-    ``role_codes``). Adding the singular attribute here keeps the existing
-    production path happy without altering source.
+    Production ``TenantContext`` deliberately does not expose ``correlation_id``
+    (the decorator reads it via ``getattr(..., "unknown")``); the tests that
+    pin a specific correlation value construct this stub so the decorator's
+    ``getattr(ctx, "correlation_id", "unknown")`` resolves to the test value.
+    The audit helper accesses ``account_id``, ``membership_id``, ``tenant_id``
+    and ``role_codes`` by dot access — no isinstance check — so a structurally
+    compatible stub drives the wrapper end-to-end.
     """
 
+    account_id: UUID | None
+    membership_id: UUID | None
+    tenant_id: UUID
+    unit_id: UUID | None
+    actor_kind: ActorKind
+    authz_revision: int
+    role_codes: tuple[str, ...] = ()
     correlation_id: str = "unknown"
-    role_code: str = "AC"
 
 
-def _ctx(**overrides: Any) -> _CtxWithCorrelation:
-    """Build a test ``TenantContext`` that satisfies the audit decorator's reads.
-
-    The decorator reads both ``ctx.correlation_id`` (via ``getattr``) and
-    ``ctx.role_code`` (in the membership authorization_ref branch); the
-    production ``TenantContext`` does not declare either. We return the
-    test-only subclass so the wrapper runs end-to-end without touching source.
-    """
+def _ctx(**overrides: Any) -> TenantContext:
+    """Build a real ``TenantContext`` for tests (no test-only fields)."""
     defaults: dict[str, Any] = dict(
         account_id=uuid4(),
         membership_id=uuid4(),
@@ -135,16 +132,24 @@ def _ctx(**overrides: Any) -> _CtxWithCorrelation:
         actor_kind=ActorKind.ACCOUNT,
         authz_revision=1,
         role_codes=("AC",),
-        correlation_id="unknown",
-        role_code="AC",
     )
     defaults.update(overrides)
-    return _CtxWithCorrelation(**defaults)
+    return TenantContext(**defaults)
 
 
-def _ctx_with_correlation(correlation_id: str, **overrides: Any) -> _CtxWithCorrelation:
-    """Build a test ``TenantContext`` with the given ``correlation_id``."""
-    return _ctx(correlation_id=correlation_id, **overrides)
+def _ctx_with_correlation(correlation_id: str, **overrides: Any) -> _CorrelationCtxStub:
+    """Build a stub context carrying the given ``correlation_id``."""
+    defaults: dict[str, Any] = dict(
+        account_id=uuid4(),
+        membership_id=uuid4(),
+        tenant_id=uuid4(),
+        unit_id=None,
+        actor_kind=ActorKind.ACCOUNT,
+        authz_revision=1,
+        role_codes=("AC",),
+    )
+    defaults.update(overrides)
+    return _CorrelationCtxStub(correlation_id=correlation_id, **defaults)
 
 
 def _last_insert_params(session: FakeAsyncSession) -> dict[str, Any]:
@@ -199,11 +204,14 @@ class TestAuditedSuccessPath:
         actor = json.loads(params["actor"])
         assert actor == {"kind": "account", "id": str(ctx.account_id)}
         # authorization_ref for an authenticated actor is the membership grant.
+        # ``role_code`` carries the first element of ``role_codes`` (or
+        # ``"unknown"`` when empty) — same pattern as in
+        # ``ksma.operations.application._audit``.
         auth = json.loads(params["auth"])
         assert auth == {
             "kind": "membership",
             "id": str(ctx.membership_id),
-            "role_code": ctx.role_code,
+            "role_code": ctx.role_codes[0] if ctx.role_codes else "unknown",
         }
         # correlation_id comes from ctx (TenantContext has no correlation_id,
         # so getattr falls back to "unknown" — that is the documented default).
@@ -641,7 +649,7 @@ class TestWriteAuditRecord:
     async def test_writes_row_with_account_authorization_ref_when_ctx_present(self) -> None:
         """``authorization_ref = authorization_ref or {…membership…}`` — line 56 (account branch)."""
         session = FakeAsyncSession()
-        ctx = _ctx(role_code="FI")
+        ctx = _ctx(role_codes=("FI",))
 
         await write_audit_record(
             session,
