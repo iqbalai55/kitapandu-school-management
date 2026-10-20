@@ -1,0 +1,120 @@
+# GitHub Actions: mutation testing on pull requests.
+#
+# Runs `make mutation` (which invokes the `mutator` harness over the
+# kitapandu-backend unit-test suite) on every PR. The job:
+#
+#   1. sets up Python 3.11 (matches pyproject.toml),
+#   2. installs backend + test deps (editable, no extras),
+#   3. installs crapper / dryer / mutator from the local `tools/`
+#      overlay (no PyPI release for these — they ship with the
+#      `mutation-harness` repo),
+#   4. runs `make mutation` from the repo root,
+#   5. uploads `.metrics/mutator.txt` and `.metrics/mutate/*.edn`
+#      as artefacts,
+#   6. posts the kill-rate line as a PR comment (idempotent: rewrites
+#      a single hidden marker so each new run replaces the previous).
+#
+# `make mutation` is allowed to fail with exit 3 (survivors present);
+# that is informational, not a build break. Only exit 2 (baseline
+# tests failed) is treated as a failure.
+
+name: mutation
+
+on:
+  pull_request:
+    branches:
+      - main
+      - integration/kill-mutants
+    paths:
+      - "kitapandu-backend/**"
+      - "kitapandu-backend/tests/**"
+      - "Makefile"
+      - ".github/workflows/mutation.yml"
+
+concurrency:
+  group: mutation-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  mutation:
+    name: mutator (${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11"]
+
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      PIP_NO_CACHE_DIR: "1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          path: kitapandu-school-management
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install backend (editable) + test deps
+        working-directory: kitapandu-school-management/kitapandu-backend
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .[test]
+
+      - name: Install harness tools (crapper, dryer, mutator)
+        run: |
+          python -m pip install \
+            "crapper @ git+https://github.com/iqbalai55/mutation-harness.git#subdirectory=crapper" \
+            "dryer   @ git+https://github.com/iqbalai55/mutation-harness.git#subdirectory=dryer" \
+            "mutator @ git+https://github.com/iqbalai55/mutation-harness.git#subdirectory=mutator"
+
+      - name: Run `make mutation`
+        id: mutator
+        working-directory: kitapandu-school-management
+        run: |
+          set +e
+          make mutation > .metrics/mutator-ci.log 2>&1
+          rc=$?
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          exit $rc
+
+      - name: Surface kill rate (always)
+        if: always()
+        working-directory: kitapandu-school-management
+        run: |
+          echo "## mutator summary" >> "$GITHUB_STEP_SUMMARY"
+          if [ -f .metrics/mutator-ci.log ]; then
+            tail -n 40 .metrics/mutator-ci.log >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "(no log captured)" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload mutator artefacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutator-${{ matrix.python-version }}
+          path: |
+            kitapandu-school-management/.metrics/mutator.txt
+            kitapandu-school-management/.metrics/mutator.stderr
+            kitapandu-school-management/.metrics/mutator-ci.log
+            kitapandu-school-management/.metrics/mutate
+          if-no-files-found: warn
+
+      - name: Comment PR with kill-rate line
+        if: github.event_name == 'pull_request' && always()
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: mutator
+          path: kitapandu-school-management/.metrics/mutator-ci.log
