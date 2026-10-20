@@ -33,7 +33,6 @@ from ksma.shared.errors import (
     VersionConflictError,
 )
 
-
 # ---------------------------------------------------------------------------
 # Issue #37 — parametrised HTTP-status mapping for every documented code.
 #

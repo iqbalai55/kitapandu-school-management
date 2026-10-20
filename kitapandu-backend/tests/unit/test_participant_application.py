@@ -43,16 +43,9 @@ from ksma.participant.domain import (
     ParticipantStatus,
     RelationKind,
 )
-from ksma.participant.infrastructure.repositories import (
-    ParticipantAccountLinkRepository,
-    ParticipantRelationRepository,
-    ParticipantRepository,
-)
 from ksma.shared.errors import ValidationError
-
-from tests.unit.conftest_helpers import FakeTenantContext
 from ksma.shared.rbac import RoleCode
-
+from tests.unit.conftest_helpers import FakeTenantContext
 
 # ---------------------------------------------------------------------------
 # Fakes + helpers
@@ -400,16 +393,15 @@ class TestRequestAccountLink:
         with patch(
             "ksma.participant.application.ParticipantAccountLinkRepository",
             return_value=link_repo,
-        ):
-            with pytest.raises(ValidationError):
-                await request_account_link(
-                    session,
-                    ctx,
-                    account_id=uuid4(),
-                    participant_id=uuid4(),
-                    related_party_id=uuid4(),
-                    evidence={"v": "x"},
-                )
+        ), pytest.raises(ValidationError):
+            await request_account_link(
+                session,
+                ctx,
+                account_id=uuid4(),
+                participant_id=uuid4(),
+                related_party_id=uuid4(),
+                evidence={"v": "x"},
+            )
         assert link_repo.create.await_count == 0
 
     async def test_neither_pid_nor_rpid_provided_raises(self) -> None:
@@ -420,16 +412,15 @@ class TestRequestAccountLink:
         with patch(
             "ksma.participant.application.ParticipantAccountLinkRepository",
             return_value=link_repo,
-        ):
-            with pytest.raises(ValidationError):
-                await request_account_link(
-                    session,
-                    ctx,
-                    account_id=uuid4(),
-                    participant_id=None,
-                    related_party_id=None,
-                    evidence={"v": "x"},
-                )
+        ), pytest.raises(ValidationError):
+            await request_account_link(
+                session,
+                ctx,
+                account_id=uuid4(),
+                participant_id=None,
+                related_party_id=None,
+                evidence={"v": "x"},
+            )
         assert link_repo.create.await_count == 0
 
 
@@ -461,17 +452,16 @@ class TestRequestRelation:
         with patch(
             "ksma.participant.application.ParticipantRelationRepository",
             return_value=rel_repo,
-        ):
-            with pytest.raises(ValidationError):
-                await request_relation(
-                    session,
-                    ctx,
-                    participant_id=uuid4(),
-                    related_party_id=uuid4(),
-                    relation_kind=RelationKind.PAYER,
-                    financial_scope=FinancialScope(),
-                    evidence={"v": "x"},
-                )
+        ), pytest.raises(ValidationError):
+            await request_relation(
+                session,
+                ctx,
+                participant_id=uuid4(),
+                related_party_id=uuid4(),
+                relation_kind=RelationKind.PAYER,
+                financial_scope=FinancialScope(),
+                evidence={"v": "x"},
+            )
         assert rel_repo.create.await_count == 0
 
     async def test_payer_with_all_approved_scope_creates_relation(self) -> None:
@@ -532,7 +522,6 @@ class TestMergeParticipants:
         # truthiness probe; a plain ``MagicMock`` (not ``AsyncMock``) returns
         # the ``return_value`` synchronously and avoids the auto-created
         # coroutine on ``.first()`` that AsyncMock would otherwise yield.
-        from unittest.mock import MagicMock
 
         class _PolicyResult:
             @staticmethod
@@ -552,15 +541,14 @@ class TestMergeParticipants:
         repo_mock.get.side_effect = _get
         with patch(
             "ksma.participant.application.ParticipantRepository", return_value=repo_mock
-        ):
-            with pytest.raises(ValidationError):
-                await merge_participants(
-                    session,
-                    ctx,
-                    source_id=source_id,
-                    target_id=target_id,
-                    reason="test-merge",
-                )
+        ), pytest.raises(ValidationError):
+            await merge_participants(
+                session,
+                ctx,
+                source_id=source_id,
+                target_id=target_id,
+                reason="test-merge",
+            )
         # The target was looked up, the source was too, and no archive/update
         # happened afterwards because the validation fired first.
         assert repo_mock.get.await_count == 2

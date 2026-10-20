@@ -19,15 +19,21 @@ assertion.
 from __future__ import annotations
 
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 from uuid import UUID, uuid4
 
 import jwt
 import pytest
+from argon2 import PasswordHasher as _PasswordHasher
+from argon2.exceptions import InvalidHashError as _InvalidHashError
 from freezegun import freeze_time
+from pydantic import SecretStr
 
+import ksma.settings as _settings_module
+from ksma.settings import Settings as _Settings
 from ksma.shared.auth import hash_password, needs_rehash, verify_password
+from ksma.shared.auth.jwt import _ALG as _JWT_ALG
 from ksma.shared.auth.jwt import (
     decode_access_token,
     issue_access_token,
@@ -39,10 +45,7 @@ from ksma.shared.errors import TokenExpiredError, TokenRevokedError
 # Patch the settings to deterministic values for every test in this module.
 @pytest.fixture(autouse=True)
 def fixed_settings():
-    from pydantic import SecretStr
-    from ksma.settings import Settings
-
-    test_settings = Settings(
+    test_settings = _Settings(
         env="test",
         log_level="INFO",
         postgres_dsn="postgresql+asyncpg://test:test@localhost:5432/test",
@@ -119,7 +122,7 @@ class TestJWTAccessToken:
         assert isinstance(token, str) and len(token) > 50
         assert isinstance(expires, datetime)
         # 15-min default.
-        delta = expires - datetime.now(timezone.utc)
+        delta = expires - datetime.now(UTC)
         assert 800 < delta.total_seconds() < 1000
 
     def test_decode_round_trip(self) -> None:
@@ -137,10 +140,8 @@ class TestJWTAccessToken:
     def test_decode_rejects_expired(self) -> None:
         p = self._payload()
         # Issue with TTL 0 then decode => exp <= now => ExpiredSignatureError.
-        from ksma.shared.auth import jwt as jwt_mod
         # Reach into the module to set a 0-second TTL on a copy.
-        import ksma.settings as settings_mod
-        with patch.object(settings_mod.get_settings(), "access_token_ttl_seconds", -1):
+        with patch.object(_settings_module.get_settings(), "access_token_ttl_seconds", -1):
             token, _ = issue_access_token(**p)
             with pytest.raises(TokenExpiredError):
                 decode_access_token(token)
@@ -148,19 +149,18 @@ class TestJWTAccessToken:
     def test_decode_rejects_wrong_audience(self) -> None:
         p = self._payload()
         token, _ = issue_access_token(**p)
-        from ksma.settings import Settings as RealSettings
-        other = RealSettings(
+        other = _Settings(
             env="test", log_level="INFO",
             postgres_dsn="postgresql+asyncpg://test:test@localhost:5432/test",
             postgres_dsn_sync="postgresql://test:test@localhost:5432/test",
-            jwt_secret=__import__("pydantic").SecretStr("test-secret-do-not-use-in-prod"),
+            jwt_secret=SecretStr("test-secret-do-not-use-in-prod"),
             jwt_issuer="kitapandu-test",
             jwt_audience="someone-else",
             access_token_ttl_seconds=900,
             refresh_token_ttl_seconds=604800,
             minio_endpoint="localhost:9000",
             minio_access_key="minioadmin",
-            minio_secret_key=__import__("pydantic").SecretStr("minioadmin"),
+            minio_secret_key=SecretStr("minioadmin"),
             minio_secure=False,
             s3_bucket="ksma-test",
             presigned_url_ttl_seconds=300,
@@ -169,24 +169,21 @@ class TestJWTAccessToken:
             max_file_bytes=10485760,
             default_timezone="Asia/Jakarta",
         )
-        with patch("ksma.shared.auth.jwt.get_settings", return_value=other):
-            with pytest.raises(TokenRevokedError):
-                decode_access_token(token)
+        with patch("ksma.shared.auth.jwt.get_settings", return_value=other), pytest.raises(TokenRevokedError):
+            decode_access_token(token)
 
     def test_decode_rejects_wrong_issuer(self) -> None:
         p = self._payload()
-        token, _ = issue_access_token(**p)
+        _token, _ = issue_access_token(**p)
         # Tamper: take the payload, change iss, re-sign with same secret.
         # Easier: use jwt library directly to make a token with wrong iss.
-        from ksma.shared.auth.jwt import _ALG
         # Reach into the patched secret by calling the same get_settings.
-        from ksma.settings import get_settings
         bad = jwt.encode(
             {"sub": str(p["subject"]), "iss": "evil", "aud": "kitapandu-test-web",
-             "iat": datetime.now(timezone.utc), "exp": datetime.now(timezone.utc) + timedelta(minutes=15),
+             "iat": datetime.now(UTC), "exp": datetime.now(UTC) + timedelta(minutes=15),
              "tz_authz_revision": 1},
-            get_settings().jwt_secret.get_secret_value(),
-            algorithm=_ALG,
+            _settings_module.get_settings().jwt_secret.get_secret_value(),
+            algorithm=_JWT_ALG,
         )
         with pytest.raises(TokenRevokedError):
             decode_access_token(bad)
@@ -201,13 +198,11 @@ class TestJWTAccessToken:
 
     def test_decode_rejects_missing_required_claims(self) -> None:
         # Build a token manually missing the sub claim.
-        from ksma.shared.auth.jwt import _ALG
-        from ksma.settings import get_settings
         token = jwt.encode(
             {"iss": "kitapandu-test", "aud": "kitapandu-test-web",
-             "iat": datetime.now(timezone.utc), "exp": datetime.now(timezone.utc) + timedelta(minutes=15)},
-            get_settings().jwt_secret.get_secret_value(),
-            algorithm=_ALG,
+             "iat": datetime.now(UTC), "exp": datetime.now(UTC) + timedelta(minutes=15)},
+            _settings_module.get_settings().jwt_secret.get_secret_value(),
+            algorithm=_JWT_ALG,
         )
         with pytest.raises(TokenRevokedError):
             decode_access_token(token)
@@ -276,20 +271,18 @@ class TestJWTAccessToken:
         # so a `raise ValueError(...)` mutation in jwt.decode catches here.
         p = self._payload()
         token, _ = issue_access_token(**p)
-        from ksma.shared.auth.jwt import _ALG
-        from ksma.settings import Settings
-        other = Settings(
+        other = _Settings(
             env="test", log_level="INFO",
             postgres_dsn="postgresql+asyncpg://test:test@localhost:5432/test",
             postgres_dsn_sync="postgresql://test:test@localhost:5432/test",
-            jwt_secret=__import__("pydantic").SecretStr("test-secret-do-not-use-in-prod"),
+            jwt_secret=SecretStr("test-secret-do-not-use-in-prod"),
             jwt_issuer="kitapandu-test",
             jwt_audience="another-audience",
             access_token_ttl_seconds=900,
             refresh_token_ttl_seconds=604800,
             minio_endpoint="localhost:9000",
             minio_access_key="minioadmin",
-            minio_secret_key=__import__("pydantic").SecretStr("minioadmin"),
+            minio_secret_key=SecretStr("minioadmin"),
             minio_secure=False,
             s3_bucket="ksma-test",
             presigned_url_ttl_seconds=300,
@@ -298,9 +291,8 @@ class TestJWTAccessToken:
             max_file_bytes=10485760,
             default_timezone="Asia/Jakarta",
         )
-        with patch("ksma.shared.auth.jwt.get_settings", return_value=other):
-            with pytest.raises(TokenRevokedError):
-                decode_access_token(token)
+        with patch("ksma.shared.auth.jwt.get_settings", return_value=other), pytest.raises(TokenRevokedError):
+            decode_access_token(token)
 
     def test_authz_version_mismatch_raises(self) -> None:
         """Authz-revision comparison lives in the resolver, not jwt.decode.
@@ -325,8 +317,7 @@ class TestJWTAccessToken:
         # error type explicitly (the existing test already does this; we
         # duplicate to pin the *class* with a non-default TTL).
         p = self._payload()
-        import ksma.settings as settings_mod
-        with patch.object(settings_mod.get_settings(), "access_token_ttl_seconds", -10):
+        with patch.object(_settings_module.get_settings(), "access_token_ttl_seconds", -10):
             token, _ = issue_access_token(**p)
             with pytest.raises(TokenExpiredError):
                 decode_access_token(token)
@@ -375,13 +366,11 @@ class TestArgon2idPositiveInvariants:
         defaults so the hasher reliably returns ``needs_rehash == True``.
         Pins the false-branch of the comparison so a ``!=`` flip is caught.
         """
-        from argon2 import PasswordHasher
-
         # m=8 MiB / t=1 / p=1 — far below the module-level hasher's defaults
         # (m=64 MiB, t=3, p=4 in argon2-cffi). ``check_needs_rehash`` returns
         # True whenever the stored parameters are weaker than the current
         # profile.
-        weak = PasswordHasher(
+        weak = _PasswordHasher(
             time_cost=1, memory_cost=8 * 1024, parallelism=1,
         )
         weak_hash = weak.hash("any-plaintext")
@@ -399,10 +388,7 @@ class TestArgon2idPositiveInvariants:
         # the contract here is "do not leak that to the caller". The current
         # implementation lets the exception propagate; the test still asserts
         # that no other class of error pops up.
-        import pytest
-        from argon2.exceptions import InvalidHashError
-
-        with pytest.raises((InvalidHashError, ValueError, TypeError)):
+        with pytest.raises((_InvalidHashError, ValueError, TypeError)):
             needs_rehash("not-an-argon2-hash")
 
 
@@ -435,7 +421,7 @@ class TestJWTPositiveInvariants:
         """
         token, _ = issue_access_token(**self._payload())
         assert token.count(".") == 2
-        header_b64, payload_b64, _sig = token.split(".")
+        _header_b64, _payload_b64, _sig = token.split(".")
         # header decodes to {"alg": "HS256", "typ": "JWT"} (PyJWT default).
         decoded_header = jwt.get_unverified_header(token)
         assert decoded_header["alg"] == "HS256"
@@ -476,7 +462,7 @@ class TestJWTPositiveInvariants:
         # (tokens issued with iat in the future raise ImmatureSignatureError).
         # Wrap both issue AND decode in freeze_time so the system clock does
         # not advance past ``exp`` between the two calls.
-        frozen = datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+        frozen = datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC)
         with freeze_time(frozen):
             token, _ = issue_access_token(**self._payload())
             claims = decode_access_token(token)
@@ -484,7 +470,7 @@ class TestJWTPositiveInvariants:
 
     def test_exp_is_iat_plus_access_token_ttl(self) -> None:
         """``exp`` must equal ``iat`` + ``access_token_ttl_seconds``."""
-        frozen = datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+        frozen = datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC)
         with freeze_time(frozen):
             token, _ = issue_access_token(**self._payload())
             claims = decode_access_token(token)
@@ -533,7 +519,7 @@ class TestJWTPositiveInvariants:
 
         Catches a ``<=`` vs ``<`` flip in the decode-vs-exp comparison.
         """
-        frozen = datetime(2024, 6, 15, 8, 0, 0, tzinfo=timezone.utc)
+        frozen = datetime(2024, 6, 15, 8, 0, 0, tzinfo=UTC)
         with freeze_time(frozen):
             p = self._payload()
             token, _ = issue_access_token(**p)
@@ -548,14 +534,13 @@ class TestJWTPositiveInvariants:
         Catches the other side of a ``<=`` vs ``<`` flip in decode — without
         this test, flipping the operator would be silently accepted.
         """
-        frozen = datetime(2024, 6, 15, 8, 0, 0, tzinfo=timezone.utc)
+        frozen = datetime(2024, 6, 15, 8, 0, 0, tzinfo=UTC)
         with freeze_time(frozen):
             p = self._payload()
             token, _ = issue_access_token(**p)
         # Move clock 15 min 1 s forward — outside TTL.
-        with freeze_time(frozen + timedelta(minutes=15, seconds=1)):
-            with pytest.raises(TokenExpiredError):
-                decode_access_token(token)
+        with freeze_time(frozen + timedelta(minutes=15, seconds=1)), pytest.raises(TokenExpiredError):
+            decode_access_token(token)
 
 
 class TestJWTRefreshToken:

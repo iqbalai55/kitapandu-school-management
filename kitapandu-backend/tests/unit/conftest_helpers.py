@@ -589,7 +589,7 @@ class FakeTenantContext:
     def build(self) -> TenantContext:
         """Build the frozen value object, applying the actor-kind invariants."""
         is_account = self._actor_kind is ActorKind.ACCOUNT
-        role_codes = (_code_of(self._role),) + tuple(_code_of(role) for role in self._extra_roles)
+        role_codes = (_code_of(self._role), *(_code_of(role) for role in self._extra_roles))
         return TenantContext(
             account_id=(self._account_id if self._account_id is not None else uuid4())
             if is_account
@@ -624,8 +624,27 @@ def tenant_context(role: RoleCode | str = RoleCode.AC, **overrides: Any) -> Tena
     return FakeTenantContext(role, **overrides).build()
 
 
-def _slug(value: Any) -> str:
+def _slug(value: Any) -> str:  # noqa: PLR0911
     """The canonical table-cell name for one boundary value."""
+    # The dispatch ladder is intentionally flat — collapsing branches would
+    # re-create the type-discrimination in a less readable form (e.g. a
+    # dict keyed on type). Each ``return`` covers a distinct leaf type.
+    if value is None:
+        return "none"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, Enum):
+        # Enum cells keep their wire spelling: RoleCode.OW -> "OW", not "ow".
+        member = value.value
+        if isinstance(member, str):
+            return re.sub(r"[^0-9a-zA-Z]+", "_", member).strip("_") or "empty"
+        return _slug(member)
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, str):
+        cleaned = re.sub(r"[^0-9a-zA-Z]+", "_", value).strip("_").lower()
+        return cleaned or "empty"
+    return re.sub(r"[^0-9a-zA-Z]+", "_", type(value).__name__).strip("_").lower()
     if value is None:
         return "none"
     if isinstance(value, bool):
@@ -762,7 +781,7 @@ def run_mutator(command: list[str], *, timeout: float | None = None) -> MutatorR
             f"{command[0]!r} is not on PATH; install the mutation toolchain before "
             "gating a function with assert_function_killed"
         )
-    completed = subprocess.run(  # noqa: S603 - fixed argv, no shell
+    completed = subprocess.run(
         command, capture_output=True, text=True, timeout=timeout, check=False
     )
     return MutatorRun(exit_code=completed.returncode, output=completed.stdout + completed.stderr)

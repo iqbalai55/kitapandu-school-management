@@ -24,8 +24,6 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from tests.unit.conftest_helpers import FakeAsyncSession, FakeTenantContext
-
 from ksma.finance import application as fin_app
 from ksma.finance.application import (
     allocate_funds,
@@ -43,7 +41,7 @@ from ksma.shared.errors import (
     ValidationError,
 )
 from ksma.shared.rbac import RoleCode
-
+from tests.unit.conftest_helpers import FakeAsyncSession, FakeTenantContext
 
 # ---------------------------------------------------------------------------
 # Helpers

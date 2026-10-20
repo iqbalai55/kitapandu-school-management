@@ -47,7 +47,6 @@ from ksma.shared.audit import audited, write_audit_record
 from ksma.shared.errors import ValidationError
 from ksma.shared.tenancy import ActorKind, TenantContext
 
-
 # ---------------------------------------------------------------------------
 # Fakes
 # ---------------------------------------------------------------------------

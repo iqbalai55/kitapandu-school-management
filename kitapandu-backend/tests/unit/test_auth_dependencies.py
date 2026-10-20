@@ -19,7 +19,7 @@ exercised without a real Postgres connection.
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
@@ -36,17 +36,13 @@ from ksma.shared.auth.dependencies import (
     tenant_context_dep,
 )
 from ksma.shared.auth.jwt import (
-    decode_access_token,
     issue_access_token,
     issue_refresh_token,
 )
 from ksma.shared.errors import (
     AuthenticationError,
-    TokenExpiredError,
-    TokenRevokedError,
 )
 from ksma.shared.tenancy import ActorKind, TenantContext
-
 
 # ---------------------------------------------------------------------------
 # Settings + fakes -----------------------------------------------------------
@@ -60,9 +56,9 @@ def fixed_settings():
     The autouse scope keeps the two test files isolated — ``test_auth.py``
     uses its own copy internally.
     """
-    from pydantic import SecretStr
+    from pydantic import SecretStr  # noqa: PLC0415
 
-    from ksma.settings import Settings
+    from ksma.settings import Settings  # noqa: PLC0415
 
     test_settings = Settings(
         env="test",
@@ -85,7 +81,7 @@ def fixed_settings():
         max_file_bytes=10485760,
         default_timezone="Asia/Jakarta",
     )
-    from unittest.mock import patch
+    from unittest.mock import patch  # noqa: PLC0415
 
     with patch("ksma.settings.get_settings", return_value=test_settings), \
          patch("ksma.shared.auth.jwt.get_settings", return_value=test_settings):
@@ -159,7 +155,7 @@ def patch_session_scope(monkeypatch: pytest.MonkeyPatch, session: _FakeSession):
     patch the *attribute* on the dependencies module, not on the
     persistence module.
     """
-    import ksma.shared.auth.dependencies as deps_mod
+    import ksma.shared.auth.dependencies as deps_mod  # noqa: PLC0415
 
     @asynccontextmanager
     async def _scope():
@@ -177,7 +173,7 @@ def patch_set_current_tenant(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
     that the dependency reaches the GUC-set step (catches an early-return
     mutation).
     """
-    import ksma.shared.auth.dependencies as deps_mod
+    import ksma.shared.auth.dependencies as deps_mod  # noqa: PLC0415
 
     spy = AsyncMock()
     monkeypatch.setattr(deps_mod, "set_current_tenant", spy)
@@ -212,7 +208,7 @@ def _build_membership(
         tenant_id=tenant_id,
         account_id=account_id,
         status=status,
-        valid_from=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        valid_from=datetime(2024, 1, 1, tzinfo=UTC),
     )
 
 
@@ -285,7 +281,7 @@ class TestCurrentAccountId:
         # Issue with TTL=-1 → exp == iat - 1s → immediately expired.
         # Pin a fresh TTL on the wrapped settings object the autouse fixture
         # already provides.
-        from ksma.shared.auth import jwt as jwt_mod
+        from ksma.shared.auth import jwt as jwt_mod  # noqa: PLC0415
 
         # Fetch the live settings via the wrapped accessor.
         live_settings = jwt_mod.get_settings()
@@ -551,7 +547,7 @@ class TestTenantContextDBValidation:
             tenant_id=tenant_id,
             account_id=account_id,
             status="active",
-            valid_from=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            valid_from=datetime(2024, 1, 1, tzinfo=UTC),
         )
         session = _FakeSession([
             _build_account(sub=account_id, authz_revision=1),
@@ -658,8 +654,8 @@ class TestRefreshTokenRotationReplay:
         doesn't open a fresh ``session_scope()``, so passing the fake
         session as the argument is sufficient.
         """
-        from ksma.identity.application import _hash_refresh, refresh
-        from ksma.identity.infrastructure.models import RefreshTokenRow
+        from ksma.identity.application import _hash_refresh, refresh  # noqa: PLC0415
+        from ksma.identity.infrastructure.models import RefreshTokenRow  # noqa: PLC0415
 
         raw = issue_refresh_token()
         rotated_row = RefreshTokenRow(
@@ -668,9 +664,9 @@ class TestRefreshTokenRotationReplay:
             account_id=uuid4(),
             membership_id=uuid4(),
             token_hash=_hash_refresh(raw),
-            issued_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
-            expires_at=datetime(2030, 1, 1, tzinfo=timezone.utc),
-            revoked_at=datetime(2024, 6, 1, tzinfo=timezone.utc),
+            issued_at=datetime(2024, 1, 1, tzinfo=UTC),
+            expires_at=datetime(2030, 1, 1, tzinfo=UTC),
+            revoked_at=datetime(2024, 6, 1, tzinfo=UTC),
             revoked_reason="rotated",
         )
         # The early-rejection branch only queries the refresh-token row by
@@ -698,8 +694,8 @@ class TestRefreshTokenRotationReplay:
         ``http_status`` is set in the 4xx range (specifically the authen
         branch at 401) so the global exception handler in ``ksma.main``
         can map it to a real HTTP response."""
-        from ksma.identity.application import _hash_refresh, refresh
-        from ksma.identity.infrastructure.models import RefreshTokenRow
+        from ksma.identity.application import _hash_refresh, refresh  # noqa: PLC0415
+        from ksma.identity.infrastructure.models import RefreshTokenRow  # noqa: PLC0415
 
         raw = issue_refresh_token()
         rotated_row = RefreshTokenRow(
@@ -708,9 +704,9 @@ class TestRefreshTokenRotationReplay:
             account_id=uuid4(),
             membership_id=uuid4(),
             token_hash=_hash_refresh(raw),
-            issued_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
-            expires_at=datetime(2030, 1, 1, tzinfo=timezone.utc),
-            revoked_at=datetime(2024, 6, 1, tzinfo=timezone.utc),
+            issued_at=datetime(2024, 1, 1, tzinfo=UTC),
+            expires_at=datetime(2030, 1, 1, tzinfo=UTC),
+            revoked_at=datetime(2024, 6, 1, tzinfo=UTC),
             revoked_reason="rotated",
         )
         session = _FakeSession([rotated_row])

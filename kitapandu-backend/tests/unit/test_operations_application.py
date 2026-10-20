@@ -42,17 +42,8 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from tests.unit.conftest_helpers import (
-    FakeAsyncSession,
-    FakeTenantContext,
-    parametrize_boundary,
-    tenant_context,
-)
-
 from ksma.operations.application import (
-    ALLOWED_MEDIA_TYPES,
     MAX_ATTACHMENT_BYTES,
-    PreviewOutcome,
     UploadResult,
     commit_import,
     preview_import,
@@ -61,7 +52,6 @@ from ksma.operations.application import (
 )
 from ksma.operations.domain import (
     AttachmentCheckStatus,
-    ImportBatch,
     ImportRowOutcome,
     ImportRowResult,
     ImportStatus,
@@ -70,7 +60,11 @@ from ksma.operations.infrastructure.repositories import ImportRepository
 from ksma.program.domain import Scale
 from ksma.shared.errors import OperationalError, StateConflictError, ValidationError
 from ksma.shared.rbac import RoleCode
-
+from tests.unit.conftest_helpers import (
+    FakeAsyncSession,
+    FakeTenantContext,
+    parametrize_boundary,
+)
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -117,7 +111,7 @@ async def _seed_approved_attachment(
     The preview path reads ``storage.get(storage_key)`` — so we must actually
     put the file in the place the fake row points to.
     """
-    from ksma.operations.application import get_storage
+    from ksma.operations.application import get_storage  # noqa: PLC0415
 
     storage = get_storage()
     attachment_id = attachment_id or uuid4()
@@ -368,7 +362,7 @@ class TestUploadAttachment:
             session,
             ctx,
             owner_ref={"kind": "import", "id": str(uuid4())},
-            original_name=f"data.{value.split('/')[-1]}",
+            original_name=f"data.{value.rsplit('/', maxsplit=1)[-1]}",
             media_type=value,
             stream=io.BytesIO(b"hello"),
         )
@@ -476,7 +470,7 @@ class TestUploadAttachment:
         assert int(row["size"]) == len(b"hello world")
         # ``owner_ref`` is JSON-encoded by the production ``_json`` helper
         # before the bind parameter is sent.
-        import json
+        import json  # noqa: PLC0415
         assert json.loads(row["owner_ref"]) == {"kind": "import", "id": owner_id}
         # The result echoes the row identity.
         assert str(result.attachment_id) == row["id"]
@@ -543,7 +537,7 @@ class TestUpsertRowResults:
         assert len(rows) == 1
         # Production uses ``_json(...)`` for JSONB columns, so the bind param
         # is the JSON-encoded string. The application maps it on the read side.
-        import json
+        import json  # noqa: PLC0415
         assert rows[0]["oc"] == ImportRowOutcome.INVALID.value
         assert json.loads(rows[0]["tref"]) == target_ref
         assert json.loads(rows[0]["errors"]) == errors

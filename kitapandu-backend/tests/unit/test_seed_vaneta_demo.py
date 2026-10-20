@@ -28,6 +28,7 @@ NOT exercised here; only the constants and pure helpers are pinned.
 """
 from __future__ import annotations
 
+from dataclasses import FrozenInstanceError
 from datetime import date
 from uuid import UUID, uuid4
 
@@ -45,7 +46,6 @@ from ksma.scripts.seed_vaneta_demo import (
     _vaneta_participants,
     auth_subject_short,
 )
-
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -106,7 +106,7 @@ class TestTenantCfgDataclass:
             institution_type="lk_lkp",
             seed_vaneta_data=False,
         )
-        with pytest.raises(Exception):
+        with pytest.raises(FrozenInstanceError):
             cfg.code = "Y"  # type: ignore[misc]
 
 

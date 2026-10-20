@@ -11,13 +11,12 @@ from __future__ import annotations
 
 import os
 from collections.abc import Iterator
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from zoneinfo import ZoneInfo
 
 import pytest
 
 from ksma.shared.time import (
-    Clock,
     FrozenClock,
     SystemClock,
     clock,
@@ -54,7 +53,7 @@ def _seed_settings_env() -> Iterator[None]:
     os.environ["KITAPANDU_MINIO_ACCESS_KEY"] = "test-access-key"
     os.environ["KITAPANDU_MINIO_SECRET_KEY"] = "test-secret-key"
     # The settings cache may have been populated by another test file.
-    from ksma.settings import get_settings
+    from ksma.settings import get_settings  # noqa: PLC0415
     get_settings.cache_clear()
     try:
         yield
@@ -84,7 +83,7 @@ class TestSystemClock:
 
 class TestFrozenClock:
     def test_pins_time(self) -> None:
-        fixed = datetime(2026, 10, 20, 12, 0, 0, tzinfo=timezone.utc)
+        fixed = datetime(2026, 10, 20, 12, 0, 0, tzinfo=UTC)
         c = FrozenClock(fixed)
         assert c.now() == fixed
         assert c.today() == date(2026, 10, 20)
@@ -93,7 +92,7 @@ class TestFrozenClock:
         naive = datetime(2026, 10, 20, 12, 0, 0)
         c = FrozenClock(naive)
         n = c.now()
-        assert n.tzinfo == timezone.utc
+        assert n.tzinfo == UTC
         assert n.year == 2026
 
 
@@ -103,7 +102,7 @@ class TestProcessClock:
         assert isinstance(clock(), SystemClock)
 
     def test_set_clock_swaps(self) -> None:
-        fixed = FrozenClock(datetime(2026, 1, 1, tzinfo=timezone.utc))
+        fixed = FrozenClock(datetime(2026, 1, 1, tzinfo=UTC))
         set_clock(fixed)
         try:
             assert clock() is fixed
@@ -122,7 +121,7 @@ class TestTimezone:
 
     def test_local_date_from_utc_datetime_in_jakarta(self) -> None:
         # 2026-10-20 17:00 UTC == 2026-10-21 00:00 Asia/Jakarta (no DST).
-        utc = datetime(2026, 10, 20, 17, 0, 0, tzinfo=timezone.utc)
+        utc = datetime(2026, 10, 20, 17, 0, 0, tzinfo=UTC)
         assert local_date(utc) == date(2026, 10, 21)
 
     def test_combine_to_instant(self) -> None:
@@ -140,7 +139,7 @@ class TestTimezone:
         returned value. A `+` / `==` flip in ``local_date`` (which shares
         the time helpers) is what this guards against.
         """
-        from freezegun import freeze_time
+        from freezegun import freeze_time  # noqa: PLC0415
 
         with freeze_time("2026-10-20 12:00:00", tz_offset=0):
             first = clock().now()
@@ -148,14 +147,14 @@ class TestTimezone:
         # Same wall clock between calls under freeze.
         assert first == second
         # And the frozen instant is exactly what we asked for.
-        assert first == datetime(2026, 10, 20, 12, 0, 0, tzinfo=timezone.utc)
+        assert first == datetime(2026, 10, 20, 12, 0, 0, tzinfo=UTC)
 
     def test_clock_today_matches_local_date_for_utc_morning(self) -> None:
         """For a UTC-morning instant, ``Clock.today()`` and ``local_date()``
         must agree — no timezone drift. Asia/Jakarta is UTC+7, so a UTC
         morning instant still falls on the *previous* calendar date in Jakarta.
         """
-        utc = datetime(2026, 10, 20, 5, 0, 0, tzinfo=timezone.utc)
+        utc = datetime(2026, 10, 20, 5, 0, 0, tzinfo=UTC)
         c = FrozenClock(utc)
         # Today() uses the *UTC* calendar by spec — it is the UTC instant's
         # date, NOT the local calendar date. The pin below locks both.
@@ -174,9 +173,9 @@ class TestTimezone:
         # The `tz=` argument must take precedence over settings.default_timezone.
         # A missing `tz or default_timezone()` branch would force Asia/Jakarta
         # regardless of the call-site preference.
-        utc = datetime(2026, 10, 20, 23, 0, 0, tzinfo=timezone.utc)
+        utc = datetime(2026, 10, 20, 23, 0, 0, tzinfo=UTC)
         # In UTC, 23:00 is still the 20th.
-        assert local_date(utc, tz=timezone.utc) == date(2026, 10, 20)
+        assert local_date(utc, tz=UTC) == date(2026, 10, 20)
         # In Asia/Jakarta (UTC+7), 23:00 UTC is 06:00 next day.
         assert local_date(utc, tz=ZoneInfo("Asia/Jakarta")) == date(2026, 10, 21)
 
@@ -184,15 +183,15 @@ class TestTimezone:
         "utc_instant, expected_jakarta_date",
         [
             # Year/month boundary: 23:30 UTC on Dec 31 is 06:30 Jan 1 Jakarta.
-            (datetime(2025, 12, 31, 23, 30, 0, tzinfo=timezone.utc), date(2026, 1, 1)),
+            (datetime(2025, 12, 31, 23, 30, 0, tzinfo=UTC), date(2026, 1, 1)),
             # Same day (UTC morning).
-            (datetime(2026, 10, 20, 1, 0, 0, tzinfo=timezone.utc), date(2026, 10, 20)),
+            (datetime(2026, 10, 20, 1, 0, 0, tzinfo=UTC), date(2026, 10, 20)),
             # UTC late afternoon -> Jakarta next-day morning.
-            (datetime(2026, 10, 20, 17, 0, 0, tzinfo=timezone.utc), date(2026, 10, 21)),
+            (datetime(2026, 10, 20, 17, 0, 0, tzinfo=UTC), date(2026, 10, 21)),
             # Mid-day UTC -> same day Jakarta (no boundary crossing).
-            (datetime(2026, 10, 20, 5, 0, 0, tzinfo=timezone.utc), date(2026, 10, 20)),
+            (datetime(2026, 10, 20, 5, 0, 0, tzinfo=UTC), date(2026, 10, 20)),
             # UTC midnight -> Jakarta 07:00 same day.
-            (datetime(2026, 10, 20, 0, 0, 0, tzinfo=timezone.utc), date(2026, 10, 20)),
+            (datetime(2026, 10, 20, 0, 0, 0, tzinfo=UTC), date(2026, 10, 20)),
         ],
     )
     def test_local_date_boundary_table(
