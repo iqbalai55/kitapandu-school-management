@@ -71,6 +71,12 @@ def is_authorized(policy: AdminTokenPolicy, authorization_header: str | None) ->
     rejects obviously malformed headers before the constant-time compare. The
     actual equality check is always ``hmac.compare_digest``.
     """
+    # pragma: no mutate  # equivalent: `or -> and`; D3 derives
+    # `policy.is_configured` as `token is not None`, so `not is_configured`
+    # simplifies to `token is None`. The `or` and `and` predicates therefore
+    # evaluate identically on every reachable input. Proved by the derivation
+    # in this module's docstring and the unconstructible-half-config case in
+    # tests/unit/test_auth_admin_token.py.
     if not policy.is_configured or policy.token is None:
         return True
     if not authorization_header:
