@@ -890,7 +890,14 @@ async def run_export(
         export_job_id,
         result_attachment_id=result_attachment_id,
         status=ExportStatus.READY,
-        expires_at=job.as_of + timedelta(seconds=ttl_seconds),
+        # T30 D5: ``expires_at`` is computed once by ``queue_export``
+        # (:818) from the caller's ``as_of`` and persisted on the
+        # ``ExportJob``. Re-deriving it here from ``job.as_of`` made the
+        # value depend on whatever the DB round-trip returned, which
+        # can drift if precision is normalised between the two reads.
+        # Reading the persisted value keeps the lifetime anchored to
+        # the original decision.
+        expires_at=job.expires_at,
     )
     job.status = ExportStatus.READY
     job.result_attachment_id = result_attachment_id

@@ -1707,13 +1707,21 @@ class TestExportSurvivors:
         """L935: sanitise + 60-char cap + empty-name fallback."""
         assert dataset_safe_name(raw) == expected
 
-    async def test_run_export_expiry_is_as_of_plus_ttl(self, storage_root: Any) -> None:
-        """L893: ``job.as_of + ttl`` written to the export_job row."""
+    async def test_run_export_expiry_persists_queue_decision(self, storage_root: Any) -> None:
+        """L893 → T30 D5: ``expires_at`` is computed once by ``queue_export``
+        and persisted on the ``ExportJob`` row. ``run_export`` reads the
+        persisted value back rather than re-deriving from ``job.as_of``,
+        so the lifetime is anchored to the original queue decision and
+        cannot drift between the two reads.
+        """
         session = FakeAsyncSession()
         tenant_id = uuid4()
         ctx = _ctx(tenant_id=tenant_id)
         job_id = uuid4()
         as_of = datetime(2026, 10, 20, 9, 0, tzinfo=UTC)
+        # queue_export (:818) computes expires_at = as_of + ttl and persists
+        # it on the row. The seed here mirrors what queue_export wrote.
+        queued_expires_at = as_of + timedelta(seconds=900)
         session.seed(
             "export_job",
             {
@@ -1726,19 +1734,57 @@ class TestExportSurvivors:
                 "as_of": as_of,
                 "status": ExportStatus.QUEUED.value,
                 "result_attachment_id": None,
-                "expires_at": None,
+                "expires_at": queued_expires_at,
                 "created_at": None,
                 "updated_at": None,
             },
         )
+        # Simulate TTL drift between the two reads by giving run_export a
+        # different ttl_seconds — it must not influence the persisted
+        # expires_at, which was fixed at queue time.
         job = await run_export(
-            session, ctx, export_job_id=job_id, body=b"csv-bytes", ttl_seconds=900
+            session, ctx, export_job_id=job_id, body=b"csv-bytes", ttl_seconds=9000
         )
         assert job.status is ExportStatus.READY
         attached = _update_params(session, "UPDATE export_job")
         assert attached, "expected an attach_result UPDATE"
-        assert attached[-1]["exp"] == as_of + timedelta(seconds=900)
+        assert attached[-1]["exp"] == queued_expires_at
         assert attached[-1]["s"] == ExportStatus.READY.value
+
+    async def test_run_export_does_not_recompute_expires_at(self, storage_root: Any) -> None:
+        """T30 D5: ``run_export`` must not recompute ``expires_at`` even
+        when the caller's ``ttl_seconds`` differs from the one
+        ``queue_export`` persisted."""
+        session = FakeAsyncSession()
+        tenant_id = uuid4()
+        ctx = _ctx(tenant_id=tenant_id)
+        job_id = uuid4()
+        as_of = datetime(2026, 10, 20, 9, 0, tzinfo=UTC)
+        queued_expires_at = as_of + timedelta(seconds=900)
+        session.seed(
+            "export_job",
+            {
+                "id": job_id,
+                "tenant_id": tenant_id,
+                "requester_account_id": uuid4(),
+                "dataset_kind": "participant",
+                "scope": {},
+                "filters": {},
+                "as_of": as_of,
+                "status": ExportStatus.QUEUED.value,
+                "result_attachment_id": None,
+                "expires_at": queued_expires_at,
+                "created_at": None,
+                "updated_at": None,
+            },
+        )
+        await run_export(
+            session, ctx, export_job_id=job_id, body=b"csv-bytes", ttl_seconds=60
+        )
+        attached = _update_params(session, "UPDATE export_job")
+        assert attached[-1]["exp"] == queued_expires_at, (
+            "expires_at must be the queue-time value, not regenerated from the run-time ttl_seconds"
+        )
 
 
 class TestMetricSurvivors:
