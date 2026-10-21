@@ -972,7 +972,14 @@ async def define_metric(
     if effective_from is None:
         effective_from = clock().now()
     if effective_until is None:
-        effective_until = datetime.now(UTC) + timedelta(days=365 * 100)
+        # T30 D6: every other timestamp in this module is sourced from
+        # the injected ``clock()`` so freezegun-driven tests stay
+        # deterministic. Pinning ``effective_until`` to wall-clock at
+        # process-start made this metric's life-time a function of when
+        # the process booted, which is almost certainly not what a caller
+        # of ``define_metric(...)`` without an explicit ``effective_until``
+        # expects.
+        effective_until = clock().now() + timedelta(days=365 * 100)
 
     metric = MetricDefinition(
         tenant_id=ctx.tenant_id,
