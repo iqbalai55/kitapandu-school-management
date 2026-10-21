@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
@@ -763,3 +764,371 @@ async def _invoke_tenant_context(
         return await tenant_context_dep(_make_request(), claims=claims)
     except HTTPException as exc:
         return exc
+
+
+# ---------------------------------------------------------------------------
+# WHERE-operator awareness (ticket #23): lines 124, 142, 143, 195, 196
+#
+# The FIFO fake hands back whatever scalar was queued, so a ``== -> !=`` flip
+# inside a ``select(...).where(...)`` was invisible: the row still came back
+# and every downstream branch behaved identically. ``_contradicts`` re-applies
+# the statement's *negated* predicates to the queued row so the equality
+# semantics of each lookup are actually exercised.
+# ---------------------------------------------------------------------------
+
+
+def _negated_predicates(clause: Any) -> list[Any]:
+    from sqlalchemy.sql import operators
+    from sqlalchemy.sql.elements import BinaryExpression, BooleanClauseList
+
+    if clause is None:
+        return []
+    if isinstance(clause, BooleanClauseList) and clause.operator is operators.and_:
+        found: list[Any] = []
+        for sub in clause.clauses:
+            found.extend(_negated_predicates(sub))
+        return found
+    if isinstance(clause, BinaryExpression) and clause.operator is operators.ne:
+        return [clause]
+    return []
+
+
+def _contradicts(row: Any, statement: Any) -> bool:
+    """``True`` when the statement's WHERE excludes ``row``."""
+    from sqlalchemy.sql.elements import BindParameter
+
+    for predicate in _negated_predicates(getattr(statement, "whereclause", None)):
+        expected = predicate.right
+        if isinstance(expected, BindParameter):
+            expected = expected.value
+        key = getattr(predicate.left, "key", None)
+        if key is None:  # pragma: no cover - defensive
+            continue
+        try:
+            present = key in row
+        except TypeError:
+            present = False
+        actual = row[key] if present else getattr(row, key, None)
+        if not present and not hasattr(row, key):
+            continue
+        if str(actual) == str(expected) or actual == expected:
+            return True
+    return False
+
+
+_orig_execute = _FakeSession.execute
+
+
+async def _where_aware_execute(self: Any, *args: Any, **kwargs: Any) -> Any:
+    """Same FIFO behaviour, but the queued row is dropped when the statement's
+    WHERE excludes it (i.e. when a ``==`` has been flipped to ``!=``)."""
+    self.executed.append((args, kwargs))
+    if not self._scalars:
+        return _FakeScalarResult(None)
+    row = self._scalars.pop(0)
+    statement = args[0] if args else kwargs.get("statement")
+    if statement is not None and _contradicts(row, statement):
+        return _FakeScalarResult(None)
+    return _FakeScalarResult(row)
+
+
+_FakeSession.execute = _where_aware_execute  # type: ignore[method-assign]
+
+
+def _ctx(*, membership_id: UUID, tenant_id: UUID, role_codes: tuple[str, ...] = ("AC",)):
+    """A resolved ``TenantContext`` (as ``tenant_context_dep`` would build)."""
+    return TenantContext(
+        account_id=uuid4(),
+        membership_id=membership_id,
+        tenant_id=tenant_id,
+        unit_id=None,
+        actor_kind=ActorKind.ACCOUNT,
+        authz_revision=1,
+        role_codes=role_codes,
+    )
+
+
+class TestWhereEqualityIsEnforced:
+    """Each DB-backed lookup must filter by equality, not by inequality."""
+
+    @pytest.fixture(autouse=True)
+    def _where_aware(self):
+        """Marker fixture — ``_FakeSession.execute`` is already WHERE-aware
+        (patched at module import); kept so the intent is visible per class."""
+        yield
+
+    @pytest.mark.asyncio
+    async def test_matching_keys_resolve_the_context(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Kills the ``== -> !=`` mutants on lines 124, 142 and 143.
+
+        The account and membership rows are seeded with exactly the values the
+        token carries, so each lookup only returns them under ``==``. Under
+        ``!=`` the WHERE excludes them and the dependency 401s / 403s.
+        """
+        account_id = uuid4()
+        tenant_id = uuid4()
+        session = _FakeSession([
+            _build_account(sub=account_id, authz_revision=1),
+            _build_membership(account_id=account_id, tenant_id=tenant_id),
+        ])
+        patch_session_scope(monkeypatch, session)
+        patch_set_current_tenant(monkeypatch)
+        ctx = await tenant_context_dep(
+            _make_request(),
+            claims=_valid_claims(account_id=account_id, tenant_id=tenant_id),
+        )
+        assert ctx.tenant_id == tenant_id
+        assert str(ctx.account_id) == str(account_id)
+
+
+class _FakeScalarsResult:
+    def __init__(self, rows: list[Any]) -> None:
+        self._rows = list(rows)
+
+    def scalars(self) -> "_FakeScalarsResult":
+        return self
+
+    def all(self) -> list[Any]:
+        return list(self._rows)
+
+    def scalar_one_or_none(self) -> Any:
+        return self._rows[0] if self._rows else None
+
+
+def _cell(row: Any, key: str) -> Any:
+    try:
+        return row[key]
+    except (TypeError, KeyError, IndexError):
+        return getattr(row, key, _MISSING)
+
+
+_MISSING = object()
+
+
+def _flat_predicates(clause: Any) -> list[Any]:
+    from sqlalchemy.sql import operators
+    from sqlalchemy.sql.elements import BinaryExpression, BooleanClauseList
+
+    if clause is None:
+        return []
+    if isinstance(clause, BooleanClauseList) and clause.operator is operators.and_:
+        found: list[Any] = []
+        for sub in clause.clauses:
+            found.extend(_flat_predicates(sub))
+        return found
+    return [clause]
+
+
+def _row_satisfies(row: Any, statement: Any) -> bool:
+    """Real WHERE semantics: ``==`` and ``!=`` both filter the row set."""
+    from sqlalchemy.sql import operators
+    from sqlalchemy.sql.elements import BinaryExpression, BindParameter
+
+    for predicate in _flat_predicates(getattr(statement, "whereclause", None)):
+        if not isinstance(predicate, BinaryExpression):
+            continue
+        key = getattr(predicate.left, "key", None)
+        if key is None:  # pragma: no cover - defensive
+            return True
+        expected = predicate.right
+        if isinstance(expected, BindParameter):
+            expected = expected.value
+        actual = _cell(row, key)
+        if actual is _MISSING:
+            continue
+        equal = str(actual) == str(expected)
+        if predicate.operator is operators.eq and not equal:
+            return False
+        if predicate.operator is operators.ne and equal:
+            return False
+    return True
+
+
+class _GrantSession(_FakeSession):
+    """FIFO-free session for the ``select(AccessAssignmentRow)...scalars()`` query.
+
+    Unlike :class:`_FakeSession` it evaluates the whole WHERE clause, so both
+    ``membership_id ==`` and ``status == 'active'`` genuinely bound the result.
+    """
+
+    async def execute(self, *args: Any, **kwargs: Any) -> Any:  # noqa: D102
+        self.executed.append((args, kwargs))
+        statement = args[0] if args else None
+        rows = list(self._scalars)
+        if statement is not None:
+            rows = [r for r in rows if _row_satisfies(r, statement)]
+        return _FakeScalarsResult(rows)
+
+
+def _grant_row_dict(
+    *,
+    membership_id: UUID,
+    scope: dict[str, Any] | None,
+    status: str = "active",
+    role_code: str = "AC",
+    action_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    from datetime import UTC as _UTC
+
+    return SimpleNamespace(
+        id=uuid4(),
+        membership_id=membership_id,
+        role_code=role_code,
+        action_ids=action_ids if action_ids is not None else ["PLT-A01"],
+        scope=scope if scope is not None else {},
+        valid_from=datetime(2020, 1, 1, tzinfo=_UTC),
+        valid_until=None,
+        status=status,
+        policy_id=uuid4(),
+    )
+
+
+class TestLoadActiveGrants:
+    """``load_active_grants`` — lines 195, 196, 207."""
+
+    @pytest.mark.asyncio
+    async def test_returns_typed_grants_for_active_membership(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from ksma.shared.auth.dependencies import load_active_grants  # noqa: PLC0415
+
+        membership_id = uuid4()
+        tenant_id = uuid4()
+        ctx = _ctx(membership_id=membership_id, tenant_id=tenant_id)
+        session = _GrantSession([_grant_row_dict(membership_id=membership_id, scope=None)])
+        patch_session_scope(monkeypatch, session)
+
+        grants = await load_active_grants(ctx)
+
+        assert len(grants) == 1
+        grant = grants[0]
+        assert grant.role_code.value == "AC"
+        assert [a.value for a in grant.action_ids] == ["PLT-A01"]
+        assert grant.status == "active"
+        assert grant.id is not None
+
+    @pytest.mark.asyncio
+    async def test_scope_is_preserved(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Kills the ``or -> and`` mutant on line 207 (``r.scope or {}``).
+
+        A non-empty scope must survive the hydration; the ``and`` mutant
+        replaces every truthy scope with ``{}`` — a silent grant widening.
+        """
+        from ksma.shared.auth.dependencies import load_active_grants  # noqa: PLC0415
+        from ksma.shared.rbac import Scope  # noqa: PLC0415
+
+        membership_id = uuid4()
+        unit_id = uuid4()
+        ctx = _ctx(membership_id=membership_id, tenant_id=uuid4())
+        raw_scope = {"units": [str(unit_id)]}
+        session = _GrantSession([
+            _grant_row_dict(membership_id=membership_id, scope=raw_scope),
+        ])
+        patch_session_scope(monkeypatch, session)
+
+        grants = await load_active_grants(ctx)
+
+        assert grants[0].scope == Scope.from_json(raw_scope), (
+            f"grant scope lost during hydration: {grants[0].scope!r}"
+        )
+        assert grants[0].scope.units == (unit_id,)
+
+    @pytest.mark.asyncio
+    async def test_other_membership_rows_are_not_returned(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Kills the ``== -> !=`` mutant on line 195 (``membership_id ==``)."""
+        from ksma.shared.auth.dependencies import load_active_grants  # noqa: PLC0415
+
+        ctx = _ctx(membership_id=uuid4(), tenant_id=uuid4())
+        session = _GrantSession([
+            _grant_row_dict(membership_id=uuid4(), scope=None),
+        ])
+        patch_session_scope(monkeypatch, session)
+
+        grants = await load_active_grants(ctx)
+
+        assert grants == ()
+
+    @pytest.mark.asyncio
+    async def test_revoked_rows_are_not_returned(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Kills the ``== -> !=`` mutant on line 196 (``status == 'active'``)."""
+        from ksma.shared.auth.dependencies import load_active_grants  # noqa: PLC0415
+
+        membership_id = uuid4()
+        ctx = _ctx(membership_id=membership_id, tenant_id=uuid4())
+        session = _GrantSession([
+            _grant_row_dict(membership_id=membership_id, scope=None, status="revoked"),
+        ])
+        patch_session_scope(monkeypatch, session)
+
+        grants = await load_active_grants(ctx)
+
+        assert grants == ()
+
+
+class TestRequireActionBoundary:
+    """``require_action`` — line 249 (``if not decision.allowed``)."""
+
+    @pytest.mark.asyncio
+    async def test_granted_action_returns_context(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from ksma.shared.auth.dependencies import require_action  # noqa: PLC0415
+        from ksma.shared.rbac import ActionCode  # noqa: PLC0415
+        
+        membership_id = uuid4()
+        ctx = _ctx(membership_id=membership_id, tenant_id=uuid4())
+        session = _GrantSession([
+            _grant_row_dict(membership_id=membership_id, scope=None, action_ids=["PLT-A01"]),
+        ])
+        patch_session_scope(monkeypatch, session)
+
+        dep = require_action(ActionCode("PLT-A01"))
+        returned = await dep(_make_request(), ctx)
+
+        assert returned is ctx
+
+    @pytest.mark.asyncio
+    async def test_denied_action_raises_403(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Kills the ``delete not`` mutant on line 249 — a denial must raise,
+        not fall through and return the context."""
+        from ksma.shared.auth.dependencies import require_action  # noqa: PLC0415
+        from ksma.shared.rbac import ActionCode  # noqa: PLC0415
+        
+        membership_id = uuid4()
+        ctx = _ctx(membership_id=membership_id, tenant_id=uuid4())
+        session = _GrantSession([
+            _grant_row_dict(membership_id=membership_id, scope=None, action_ids=["PLT-A01"]),
+        ])
+        patch_session_scope(monkeypatch, session)
+
+        dep = require_action(ActionCode("PLT-A07"))
+        with pytest.raises(HTTPException) as exc_info:
+            await dep(_make_request(), ctx)
+
+        assert exc_info.value.status_code == 403
+        assert exc_info.value.detail == {"code": "ACCESS_DENIED"}
+
+    @pytest.mark.asyncio
+    async def test_no_grants_at_all_is_403(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from ksma.shared.auth.dependencies import require_action  # noqa: PLC0415
+        from ksma.shared.rbac import ActionCode  # noqa: PLC0415
+        
+        ctx = _ctx(membership_id=uuid4(), tenant_id=uuid4())
+        patch_session_scope(monkeypatch, _GrantSession([]))
+
+        dep = require_action(ActionCode("PLT-A01"))
+        with pytest.raises(HTTPException) as exc_info:
+            await dep(_make_request(), ctx)
+        assert exc_info.value.status_code == 403
