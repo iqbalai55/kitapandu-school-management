@@ -333,3 +333,110 @@ async def test_session_scope_rolls_back_on_exception() -> None:
     assert len(sessions) == 1
     assert sessions[0].commits == 0
     assert sessions[0].rollbacks == 1
+
+# ---------------------------------------------------------------------------
+# Ticket #27 — spec #16 user story #16: the worker loop.
+#
+# ``run_forever`` is the CLI loop: drain a batch, and ONLY back off when the
+# queue came back empty. Both halves of that guard are pinned here:
+#   * empty batch  -> sleep(poll_interval)   (kills ``n == 0`` -> ``n == 1``)
+#   * non-empty    -> NO sleep, keep draining(kills ``n == 0`` -> ``n != 0``)
+#   * the loop itself keeps ticking             (kills ``while True`` -> ``while False``)
+#
+# The loop is bounded by raising a ``BaseException`` sentinel out of
+# ``drain_once``: ``run_forever`` catches ``Exception``, so a ``BaseException``
+# unwinds cleanly instead of being swallowed by the tick's ``except`` arm.
+# ---------------------------------------------------------------------------
+
+
+class _StopLoop(BaseException):
+    """Unwinds ``run_forever`` without being caught by its ``except Exception``."""
+
+
+class _RecordingSleep:
+    """Stand-in for the ``asyncio`` module attribute ``run_forever`` uses."""
+
+    def __init__(self) -> None:
+        self.calls: list[float] = []
+
+    async def sleep(self, seconds: float) -> None:
+        self.calls.append(seconds)
+
+    def as_module(self) -> object:
+        import types
+
+        return types.SimpleNamespace(sleep=self.sleep)
+
+
+def _drain_script(results: list[int]):
+    """Build a ``drain_once`` double returning ``results[i]`` then stopping."""
+    batches: list[int] = []
+
+    async def fake_drain_once(batch_size: int) -> int:
+        idx = len(batches)
+        batches.append(batch_size)
+        if idx >= len(results) - 1:
+            raise _StopLoop()
+        return results[idx]
+
+    return fake_drain_once, batches
+
+
+@pytest.mark.asyncio
+async def test_run_forever_backs_off_when_the_queue_is_empty(monkeypatch) -> None:
+    """Empty queue -> sleep between ticks."""
+    from ksma.shared import outbox  # noqa: PLC0415
+
+    fake_drain, batches = _drain_script([0, 0])
+    sleeper = _RecordingSleep()
+    monkeypatch.setattr(outbox, "drain_once", fake_drain)
+    monkeypatch.setattr(outbox, "asyncio", sleeper.as_module())
+
+    with pytest.raises(_StopLoop):
+        await outbox.run_forever(0.25, 7)
+
+    assert batches == [7, 7]
+    assert sleeper.calls == [0.25]
+
+
+@pytest.mark.asyncio
+async def test_run_forever_does_not_sleep_when_rows_were_dispatched(
+    monkeypatch,
+) -> None:
+    """Non-empty batch -> no back-off; the worker keeps draining hot rows."""
+    from ksma.shared import outbox  # noqa: PLC0415
+
+    fake_drain, batches = _drain_script([3, 5])
+    sleeper = _RecordingSleep()
+    monkeypatch.setattr(outbox, "drain_once", fake_drain)
+    monkeypatch.setattr(outbox, "asyncio", sleeper.as_module())
+
+    with pytest.raises(_StopLoop):
+        await outbox.run_forever(1.5, 25)
+
+    assert batches == [25, 25]
+    assert sleeper.calls == []
+
+
+@pytest.mark.asyncio
+async def test_run_forever_survives_a_failing_tick_and_backs_off(monkeypatch) -> None:
+    """A raising ``drain_once`` is logged, then the loop sleeps and retries."""
+    from ksma.shared import outbox  # noqa: PLC0415
+
+    calls: list[int] = []
+
+    async def fake_drain_once(batch_size: int) -> int:
+        calls.append(batch_size)
+        if len(calls) == 2:
+            raise _StopLoop()
+        raise RuntimeError("outbox table missing")
+
+    sleeper = _RecordingSleep()
+    monkeypatch.setattr(outbox, "drain_once", fake_drain_once)
+    monkeypatch.setattr(outbox, "asyncio", sleeper.as_module())
+
+    with pytest.raises(_StopLoop):
+        await outbox.run_forever(0.5, 11)
+
+    assert calls == [11, 11]
+    assert sleeper.calls == [0.5]
