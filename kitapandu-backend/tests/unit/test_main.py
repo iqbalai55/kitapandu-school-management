@@ -251,17 +251,18 @@ def test_access_denied_handler_carries_no_object_payload() -> None:
     assert "field_path" not in body
 
 
-def test_access_denied_details_would_leak_if_supplied() -> None:
-    """Hazard pin: ``to_payload`` is code-agnostic, so ``details`` on an
-    ``ACCESS_DENIED`` reaches the client verbatim. Production must therefore
-    never attach details to this code (see the note above)."""
+def test_access_denied_omits_details_when_supplied() -> None:
+    """T30 D4: ``to_payload`` strips ``details`` for ``ACCESS_DENIED``
+    so that an ``AccessDeniedError`` constructed with a stray
+    ``details`` payload never leaks the object descriptor to a client
+    that is by definition not authorised to see it (NFR08)."""
     err = AccessDeniedError(
         "Forbidden", details={"participant_id": "8f2c-1234", "tenant_id": "9999"}
     )
     payload = err.to_payload()
 
     assert payload["code"] == "ACCESS_DENIED"
-    assert payload["details"] == {"participant_id": "8f2c-1234", "tenant_id": "9999"}
+    assert "details" not in payload
 
 
 def test_state_conflict_handler_does_pass_through_details() -> None:
