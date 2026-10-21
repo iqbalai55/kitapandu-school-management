@@ -84,10 +84,29 @@ _INSERT_RE = re.compile(r"INSERT\s+INTO\s+([A-Za-z_][\w.]*)", re.IGNORECASE)
 _UPDATE_RE = re.compile(r"UPDATE\s+([A-Za-z_][\w.]*)", re.IGNORECASE)
 _DELETE_RE = re.compile(r"DELETE\s+FROM\s+([A-Za-z_][\w.]*)", re.IGNORECASE)
 _SELECT_RE = re.compile(r"FROM\s+([A-Za-z_][\w.]*)", re.IGNORECASE)
-_EQUALITY_RE = re.compile(r"([A-Za-z_]\w*)\s*=\s*:(\w+)")
+_EQUALITY_RE = re.compile(r"([A-Za-z_]\w*)\s*(=|<>|!=|<=|>=|<|>)\s*:(\w+)")
 _SET_ASSIGNMENT_RE = re.compile(r"([A-Za-z_]\w*)\s*=\s*:(\w+)")
+# Same as `_EQUALITY_RE` — kept as an alias so the WHERE-predicate model can
+# capture the comparison operator and the SET-assignment extractor can keep
+# matching only the (col, param)-pair shape it cared about before.
+_WHERE_PREDICATE_RE = _EQUALITY_RE
 _WHERE_RE = re.compile(r"\bWHERE\b(.*)", re.IGNORECASE | re.DOTALL)
 _SET_RE = re.compile(r"\bSET\b(.*?)(?:\bWHERE\b|$)", re.IGNORECASE | re.DOTALL)
+
+# Operator dispatch table — `<>` and `!=` collapse to `ne`; the variants
+# `<=` / `>=` round to `lt` / `gt` (the fake's `_same` is loose on numeric
+# coercion, which is a faithful approximation of Postgres semantics for our
+# use cases).
+import operator as _op_mod
+_PREDICATE_OPS: dict[str, Any] = {
+    "=": _op_mod.eq,
+    "!=": _op_mod.ne,
+    "<>": _op_mod.ne,
+    "<": _op_mod.lt,
+    ">": _op_mod.gt,
+    "<=": _op_mod.le,
+    ">=": _op_mod.ge,
+}
 
 
 def _plain_table(name: str) -> str:
@@ -263,8 +282,12 @@ class FakeAsyncSession:
 
         return FakeResult([])
 
-    def _where(self, sql: str) -> list[tuple[str, str]]:
-        """``col = :param`` pairs from the WHERE clause only.
+    def _where(self, sql: str) -> list[tuple[str, str, str]]:
+        """``(col, op, param)`` predicates from the WHERE clause only.
+
+        ``op`` is one of ``=``, ``!=``, ``<>``, ``<``, ``>``, ``<=``, ``>=``;
+        anything outside that set is rejected so callers can't accidentally
+        introduce SQL semantics the fake does not understand.
 
         The clause is sliced from the original-cased SQL so bind-parameter
         names keep their case (``:id``, not ``:ID``).
@@ -272,15 +295,44 @@ class FakeAsyncSession:
         found = _WHERE_RE.search(sql)
         if found is None:
             return []
-        return [(col.lower(), param) for col, param in _EQUALITY_RE.findall(found.group(1))]
+        predicates: list[tuple[str, str, str]] = []
+        for col, op, param in _WHERE_PREDICATE_RE.findall(found.group(1)):
+            if op not in _PREDICATE_OPS:
+                # Unknown operator (e.g. `IS NULL`, `IN (...)`): the fake
+                # bails out by returning an empty predicate list, which
+                # surfaces as "no filter applied" — better than silently
+                # accepting an unsupported semantic.
+                return []
+            predicates.append((col.lower(), op, param))
+        return predicates
 
     def _matches(
-        self, row: FakeRow, predicates: Iterable[tuple[str, str]], params: Mapping[str, Any]
+        self, row: FakeRow, predicates: Iterable[tuple[str, str, str]], params: Mapping[str, Any]
     ) -> bool:
-        return all(
-            column in row and param in params and _same(row[column], params[param])
-            for column, param in predicates
-        )
+        for column, op, param in predicates:
+            if column not in row or param not in params:
+                return False
+            op_fn = _PREDICATE_OPS[op]
+            # 1. Strict comparison (Python's built-in dispatch).
+            try:
+                strict_pass = op_fn(row[column], params[param])
+            except TypeError:
+                # Incomparable types — fall back to a loose comparison
+                # for equality only; ordering is reported as no-match
+                # (we do not pretend to know how UUID compares to int).
+                strict_pass = None
+            if strict_pass is True:
+                continue
+            # 2. Loose comparison (UUID vs str, int vs Decimal, etc.)
+            # applies to `=` / `!=` / `<>` only.
+            if op in ("=", "!=", "<>"):
+                loose_pass = _same(row[column], params[param])
+                if op == "=" and loose_pass:
+                    continue
+                if op in ("!=", "<>") and not loose_pass:
+                    continue
+            return False
+        return True
 
     def _select(
         self, table: str, sql: str, params: Mapping[str, Any]
