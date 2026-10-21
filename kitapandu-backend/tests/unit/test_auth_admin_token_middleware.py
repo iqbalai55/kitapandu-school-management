@@ -172,7 +172,7 @@ class TestHalfConfiguredPolicy:
         ``admin_token.py``: the middleware must not 500 on a policy whose
         ``is_configured`` flag is set but whose token is ``None``."""
         app = _build_app(TOKEN, wire=False)
-        app.state.admin_token_policy = AdminTokenPolicy(token=None, is_configured=True)
+        app.state.admin_token_policy = AdminTokenPolicy(token=None)
         with TestClient(app) as client:
             response = client.get(ADMIN_PATH_PREFIX + "ping")
         assert response.status_code == 200, response.text

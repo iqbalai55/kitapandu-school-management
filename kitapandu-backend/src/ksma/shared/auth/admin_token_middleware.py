@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 #: Unconfigured (dev) fallback — used only if the middleware runs against an app
 #: that never went through ``create_app``'s startup wiring.
-DEFAULT_POLICY = AdminTokenPolicy(token=None, is_configured=False)
+DEFAULT_POLICY = AdminTokenPolicy(token=None)
 
 
 def get_policy(app: Any) -> AdminTokenPolicy:

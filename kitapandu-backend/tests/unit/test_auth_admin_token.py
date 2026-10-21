@@ -77,22 +77,27 @@ class TestIsAuthorized:
         assert is_authorized(load_policy(None), None) is True
         assert is_authorized(load_policy(""), "Bearer wrong") is True
 
-    def test_configured_but_tokenless_policy_still_allows(
-        self,
-    ) -> None:
-        """Kills the ``or -> and`` mutant on line 64.
+    def test_configured_but_tokenless_policy_is_unconstructible(self) -> None:
+        """T30 D3: ``is_configured`` is now derived as ``token is not None``,
+        so the half-configured state ``(is_configured=True, token=None)``
+        is no longer reachable. ``AdminTokenPolicy(token=None)`` is the
+        only shape that yields ``is_configured=False``, and the
+        documented dev-mode bypass (``not is_configured or token is None``)
+        routes through it.
 
-        ``AdminTokenPolicy(is_configured=True, token=None)`` is the
-        half-configured state (e.g. a caller built the dataclass by hand). The
-        documented dev-mode bypass is ``not configured OR no token`` — so this
-        combination must allow the request through. Under ``and`` the code
-        would fall through to ``hmac.compare_digest(presented, None)`` and
-        raise ``TypeError`` instead of allowing.
+        The previous test constructed ``AdminTokenPolicy(token=None,
+        is_configured=True)`` to pin the ``or -> and`` boundary on line
+        64. The ``or -> and`` mutant is now meaningless because
+        ``is_configured`` cannot be ``True`` when ``token`` is ``None`` —
+        every reachable input makes ``is_configured=token is not None`` so
+        the two predicates are deterministic. The kill is preserved by
+        the equivalent of the original observation: a tokenless policy
+        still allows through.
         """
-        half = AdminTokenPolicy(token=None, is_configured=True)
-        assert half.is_configured is True and half.token is None
-        assert is_authorized(half, None) is True
-        assert is_authorized(half, "Bearer anything") is True
+        unconfigured = AdminTokenPolicy(token=None)
+        assert unconfigured.is_configured is False
+        assert is_authorized(unconfigured, None) is True
+        assert is_authorized(unconfigured, "Bearer anything") is True
 
     # --- configured mode ---------------------------------------------------
 
