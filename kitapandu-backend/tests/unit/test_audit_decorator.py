@@ -734,3 +734,163 @@ class _NoIdResult:
     """Result without ``.id`` — used to pin the ``elif`` fallback branch."""
 
 
+
+
+# ---------------------------------------------------------------------------
+# Ticket #27 — the two long-tail survivors in ``shared/audit``.
+#
+# 1. ``_json`` must serialise with ``sort_keys=True``: the audit JSONB
+#    columns (``actor`` / ``object_ref`` / ``change_ref`` /
+#    ``authorization_ref``) are compared across replicas and hashed for
+#    correlation, so key order must be canonical.
+# 2. ``if object_id_arg and object_id_arg in kwargs:`` — when the named kwarg
+#    is ABSENT at call time the decorator must fall back to ``result.id``
+#    rather than raising ``KeyError``.
+# ---------------------------------------------------------------------------
+
+
+class TestCanonicalJsonSerialisation:
+    """``_json(d)`` is the single serialiser for every audit JSONB column."""
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"zeta": 1, "alpha": 2, "mid": 3},
+            {"change_ref": {"b": 2, "a": 1}},
+            {"role_code": "AC", "id": "m-1", "kind": "membership"},
+        ],
+        ids=["actor_keys", "nested_change_ref", "authorization_ref"],
+    )
+    def test_json_columns_are_key_sorted(self, payload: dict[str, Any]) -> None:
+        session = FakeAsyncSession()
+
+        # write_audit_record is synchronous about *serialisation* only; drive it.
+        import asyncio as _asyncio  # noqa: PLC0415
+
+        row_id = _asyncio.run(
+            write_audit_record(
+                session,
+                action_id="PAY-A01",
+                object_ref=payload,
+                ctx=None,
+                correlation_id="corr-1",
+            )
+        )
+        params = session.calls[0]["params"]
+
+        assert row_id == session.row_id
+        # Every JSONB column is emitted with sorted keys, regardless of the
+        # insertion order of the source dict.
+        assert params["obj"] == json.dumps(payload, sort_keys=True, default=str)
+        assert params["actor"] == json.dumps(
+            {"id": "audit-stale", "kind": "system"}, sort_keys=True
+        )
+        # Non-alphabetical insertion order would leak through if sorting were off.
+        assert list(json.loads(params["obj"])) == sorted(payload)
+
+    def test_change_ref_column_is_also_key_sorted(self) -> None:
+        session = FakeAsyncSession()
+        import asyncio as _asyncio  # noqa: PLC0415
+
+        _asyncio.run(
+            write_audit_record(
+                session,
+                action_id="PAY-A01",
+                object_ref={"kind": "payment", "id": "p-1"},
+                ctx=None,
+                correlation_id="corr-1",
+                change_ref={"z": 1, "a": {"n": 2, "m": 3}},
+            )
+        )
+        params = session.calls[0]["params"]
+        assert params["change"] == json.dumps(
+            {"a": {"m": 3, "n": 2}, "z": 1}, sort_keys=True
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class _Result:
+    id: UUID
+
+
+class TestObjectIdResolution:
+    """``object_id_arg`` names the kwarg holding the target id; when it is not
+    passed at call time the decorator falls back to the return value's ``.id``."""
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_result_id_when_kwarg_absent(self) -> None:
+        session = FakeAsyncSession()
+        result_id = uuid4()
+
+        @audited("INV-A02", object_kind="invoice", object_id_arg="invoice_id")
+        async def _service(session, ctx, *, invoice_id=None):  # noqa: ANN001, ARG001
+            return _Result(id=result_id)
+
+        returned = await _service(session, _ctx())
+
+        assert returned.id == result_id
+        obj = json.loads(session.calls[0]["params"]["obj"])
+        assert obj == {"id": str(result_id), "kind": "invoice"}
+
+    @pytest.mark.asyncio
+    async def test_kwarg_wins_over_result_id_when_present(self) -> None:
+        """Boundary pair: with the kwarg present the *kwarg* is authoritative,
+        even when it disagrees with ``result.id``."""
+        session = FakeAsyncSession()
+        kwarg_id, result_id = uuid4(), uuid4()
+
+        @audited("INV-A02", object_kind="invoice", object_id_arg="invoice_id")
+        async def _service(session, ctx, *, invoice_id=None):  # noqa: ANN001, ARG001
+            return _Result(id=result_id)
+
+        await _service(session, _ctx(), invoice_id=kwarg_id)
+
+        obj = json.loads(session.calls[0]["params"]["obj"])
+        assert obj == {"id": str(kwarg_id), "kind": "invoice"}
+
+    @pytest.mark.asyncio
+    async def test_no_id_source_leaves_object_ref_without_id(self) -> None:
+        """Neither a kwarg nor ``result.id`` -> ``object_ref`` carries only the
+        kind (never a fabricated / null id)."""
+        session = FakeAsyncSession()
+
+        @audited("INV-A02", object_kind="invoice", object_id_arg="invoice_id")
+        async def _service(session, ctx, *, invoice_id=None):  # noqa: ANN001, ARG001
+            return None
+
+        await _service(session, _ctx())
+
+        obj = json.loads(session.calls[0]["params"]["obj"])
+        assert obj == {"kind": "invoice"}
+
+
+class TestReasonRequirementBoundary:
+    """``reason_required and reason_arg`` — both halves matter."""
+
+    @pytest.mark.asyncio
+    async def test_reason_required_raises_when_reason_kwarg_missing(self) -> None:
+        session = FakeAsyncSession()
+
+        @audited("PAY-A01", reason_required=True)
+        async def _service(session, ctx, *, reason=None):  # noqa: ANN001, ARG001
+            return _Result(id=uuid4())
+
+        with pytest.raises(ValidationError, match="reason is required"):
+            await _service(session, _ctx())
+        assert session.calls == []  # nothing written before the guard
+
+    @pytest.mark.asyncio
+    async def test_reason_not_required_skips_the_guard_even_when_absent(self) -> None:
+        """Boundary pair: ``reason_required=False`` with ``reason_arg`` still
+        resolved must NOT raise (kills ``and`` -> ``or`` on the guard)."""
+        session = FakeAsyncSession()
+        result_id = uuid4()
+
+        @audited("PAY-A01", reason_required=False)
+        async def _service(session, ctx, *, reason=None):  # noqa: ANN001, ARG001
+            return _Result(id=result_id)
+
+        await _service(session, _ctx())
+
+        assert len(session.calls) == 1
+        assert session.calls[0]["params"]["reason"] is None

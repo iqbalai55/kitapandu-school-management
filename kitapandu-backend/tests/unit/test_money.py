@@ -12,6 +12,7 @@ Seam: the value object itself. Tests assert behavior on the public
 """
 from __future__ import annotations
 
+from decimal import Decimal
 from enum import StrEnum as _StrEnum
 
 import pytest
@@ -243,3 +244,65 @@ def test_negative_amount_explicitly_does_not_raise_validation_error() -> None:
     """
     with pytest.raises(NegativeBalanceError):
         Money(amount=-42, currency=Currency.IDR)
+
+# ---------------------------------------------------------------------------
+# Ticket #27 — spec #16 user story #13: decimal <-> smallest-unit round-trip
+# and the sub-zero subtraction boundary.
+# ---------------------------------------------------------------------------
+
+
+class TestDecimalConversion:
+    """``Money`` stores an int in the smallest unit; ``to_decimal`` /
+    ``from_decimal`` are the only boundary crossings.
+
+    ``_SCALE`` is 0 for the pilot (IDR has no subunit), so ``scaleb`` must be
+    applied with the *negative* exponent — flipping the sign (or dropping the
+    argument entirely) is the mutation these tests pin.
+    """
+
+    def test_to_decimal_preserves_the_integer_amount(self) -> None:
+        assert Money(amount=123_456, currency=Currency.IDR).to_decimal() == Decimal(
+            123_456
+        )
+
+    def test_to_decimal_of_zero_is_zero(self) -> None:
+        assert Money(amount=0, currency=Currency.IDR).to_decimal() == Decimal(0)
+
+    @pytest.mark.parametrize(
+        "value", ["0", "1", "999", "123456", "999999999999999"],
+    )
+    def test_from_decimal_to_decimal_round_trip(self, value: str) -> None:
+        """``from_decimal(v).to_decimal() == Decimal(v)`` for every pilot value."""
+        m = Money.from_decimal(Decimal(value), Currency.IDR)
+        assert m.amount == int(Decimal(value))
+        assert m.to_decimal() == Decimal(value)
+
+
+class TestSubtractionBoundary:
+    """``if result < 0:`` — the guard fires on *strictly* negative results.
+
+    Boundary pair: subtracting exactly the whole balance yields zero and MUST
+    NOT raise (kills both ``< -> <=`` and ``0 -> 1``); subtracting one rupiah
+    more MUST raise (the other side of the same guard).
+    """
+
+    def test_subtracting_the_exact_balance_yields_zero(self) -> None:
+        result = Money(amount=1_000, currency=Currency.IDR) - Money(
+            amount=1_000, currency=Currency.IDR
+        )
+        assert result.amount == 0
+        assert result.is_zero() is True
+        assert result.currency is Currency.IDR
+
+    def test_subtracting_one_less_than_the_balance_is_allowed(self) -> None:
+        result = Money(amount=1_000, currency=Currency.IDR) - Money(
+            amount=999, currency=Currency.IDR
+        )
+        assert result.amount == 1
+
+    def test_subtracting_one_more_than_the_balance_raises(self) -> None:
+        with pytest.raises(NegativeBalanceError) as exc_info:
+            Money(amount=999, currency=Currency.IDR) - Money(
+                amount=1_000, currency=Currency.IDR
+            )
+        assert exc_info.value.details == {"result": -1}
