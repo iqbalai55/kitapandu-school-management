@@ -78,6 +78,7 @@ def _seed_session(
     session_id: UUID | None = None,
     unit_id: UUID | None = None,
     lifecycle_status: SessionLifecycleStatus = SessionLifecycleStatus.SCHEDULED,
+    effective_revision_id: UUID | None = None,
 ) -> UUID:
     """Seed a ``session`` row the application can ``lock_for_update``."""
     sid = session_id or uuid4()
@@ -89,7 +90,9 @@ def _seed_session(
             "unit_id": str(unit_id or uuid4()),
             "batch_id": str(uuid4()),
             "session_no": 1,
-            "effective_revision_id": None,
+            "effective_revision_id": (
+                str(effective_revision_id) if effective_revision_id is not None else None
+            ),
             "lifecycle_status": lifecycle_status.value,
             "closure_id": None,
             "reschedule_reason": None,
@@ -718,6 +721,66 @@ class TestPostCancelSession:
         ctx = _ctx(tenant_id=tenant_id)
         with pytest.raises(StateConflictError):
             await cancel_session(session, ctx, session_id=sid, reason="x")
+
+    async def test_synthetic_revision_id_is_a_real_uuid(self) -> None:
+        """Kills line 169 ``or -> and`` on ``s.effective_revision_id or uuid4()``.
+
+        When the session has no effective revision yet, the ``or`` fallback
+        must yield a *synthetic UUID*. The ``and`` mutant short-circuits on the
+        falsy left operand and hands ``None`` to ``set_effective_revision``,
+        which the SQL layer stringifies to the literal ``"None"`` — a
+        non-UUID value persisted into a UUID column. Asserting only
+        ``is not None`` does not catch it; the value must *parse as a UUID*.
+        """
+        session = FakeAsyncSession()
+        tenant_id = uuid4()
+        sid = _seed_session(
+            session,
+            tenant_id=tenant_id,
+            lifecycle_status=SessionLifecycleStatus.SCHEDULED,
+        )
+        assert session.rows("session")[0]["effective_revision_id"] is None
+
+        await cancel_session(session, _ctx(tenant_id=tenant_id), session_id=sid, reason="x")
+
+        raw = session.rows("session")[0]["effective_revision_id"]
+        assert raw is not None
+        assert raw != "None"
+        # Parses as a UUID → the fallback really minted one.
+        assert UUID(str(raw)).version == 4
+        # …and it is bound into the UPDATE as the ``r`` parameter.
+        updates = [
+            c
+            for c in session.calls
+            if c.op == "execute" and "effective_revision_id=:r" in (c.sql or "")
+        ]
+        assert updates, "the cancel must repoint the session at a revision"
+        assert updates[-1].params["r"] == str(raw)
+
+    async def test_existing_effective_revision_is_preserved(self) -> None:
+        """Boundary pair: with an effective revision, the ``or`` keeps *it*.
+
+        Cancelling must not invent a new pointer when the session already has
+        one — the session keeps pointing at the revision that was in force.
+        """
+        session = FakeAsyncSession()
+        tenant_id = uuid4()
+        revision_id = uuid4()
+        sid = _seed_session(
+            session,
+            tenant_id=tenant_id,
+            lifecycle_status=SessionLifecycleStatus.SCHEDULED,
+            effective_revision_id=revision_id,
+        )
+
+        await cancel_session(
+            session, _ctx(tenant_id=tenant_id), session_id=sid, reason="instructor absent"
+        )
+
+        row = session.rows("session")[0]
+        assert row["effective_revision_id"] == str(revision_id)
+        assert "CANCELLED" in row["reschedule_reason"]
+        assert row["lifecycle_status"] == SessionLifecycleStatus.CANCELLED.value
 
 
 # ===========================================================================
