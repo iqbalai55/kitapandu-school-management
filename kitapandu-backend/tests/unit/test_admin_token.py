@@ -19,8 +19,8 @@ from ksma.shared.auth.admin_token import (
     load_policy,
 )
 
-CONFIGURED = AdminTokenPolicy(token="s3cr3t-admin-token", is_configured=True)
-UNCONFIGURED = AdminTokenPolicy(token=None, is_configured=False)
+CONFIGURED = AdminTokenPolicy(token="s3cr3t-admin-token")
+UNCONFIGURED = AdminTokenPolicy(token=None)
 
 
 # --- dev / no-token mode -----------------------------------------------------

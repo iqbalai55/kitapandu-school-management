@@ -25,6 +25,7 @@ import base64
 import datetime
 import json
 import os
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 from uuid import UUID, uuid4
@@ -1336,3 +1337,649 @@ class TestAsyncMain:
             assert ok is False
             assert detail == "skipped due to earlier failure"
         assert rec.failing_step == 3
+
+
+# ===========================================================================
+# T19 — kill the 22 SURVIVED mutations in the smoke pilot driver
+#
+# Survivor map (``.metrics/mutator.txt`` @ integration tip 59e7172):
+#
+#   :87  True -> False           ``pool_pre_ping=True`` on the lookup engine
+#   :121 0 -> 1                  account key is the role prefix, not the suffix
+#   :220 or -> and / 0 -> 1      ``int(total or 0)`` COALESCE over the SUM
+#   :268 delete -                base64 padding sign — provably equivalent
+#                                (pinned by ``test_padding_sign_is_unobservable``)
+#   :313 1 -> 0 / False -> True  empty ``access_token`` records step 1 FAILED
+#   :359 False -> True           step_03 transport-error record
+#   :376 False -> True           ``dup_ok = False`` when P-0006 is absent
+#   :404 False -> True           step_04 transport-error record
+#   :476 False -> True           step_05/06 invoice transport-error record
+#   :484 False -> True           step_05/06 invoice non-200 record
+#   :498 0 -> 1                  ``overdue_amount`` trips at 1, not at 0
+#   :512 0 -> 1                  ``active_allocation_total`` default is 0
+#   :549 False -> True           step_07 session transport-error record
+#   :575 False -> True           step_07 attendance transport-error record
+#   :616 False -> True           step_08 inbox transport-error record
+#   :654 False -> True           step_09 audit transport-error record
+#   :697 * -> /                  health-check elapsed is scaled to milliseconds
+#   :727 - -> +                  elapsed is ``now - started``
+#   :728 0 -> 1 / 1 -> 0         exit code tracks ``rec.failing_step``
+# ===========================================================================
+
+
+# ---------------------------------------------------------------------------
+# In-memory asyncpg double for the DB-bound ``_lookup``
+#
+# ``_lookup`` is the only DB seam in the module. Rather than stand up a
+# real engine (integration test), we hand ``create_async_engine`` a fake
+# that replays the ten ``execute`` calls in order and records the
+# constructor kwargs — that is where the ``pool_pre_ping=True`` contract
+# lives.
+# ---------------------------------------------------------------------------
+
+
+class _FakeResult:
+    """The subset of SQLAlchemy's ``Result`` that ``_lookup`` consumes."""
+
+    def __init__(self, rows):
+        self._rows = list(rows)
+
+    def first(self):
+        return self._rows[0] if self._rows else None
+
+    def all(self):
+        return list(self._rows)
+
+
+class _FakeBegin:
+    def __init__(self, conn):
+        self._conn = conn
+
+    async def __aenter__(self):
+        return self._conn
+
+    async def __aexit__(self, *exc_info):
+        return False
+
+
+class _FakeConn:
+    def __init__(self, results):
+        self._results = list(results)
+        self.statements: list[str] = []
+
+    async def execute(self, statement, params=None):
+        self.statements.append(str(statement))
+        return self._results.pop(0) if self._results else _FakeResult([])
+
+
+class _FakeEngine:
+    def __init__(self, results):
+        self.conn = _FakeConn(results)
+        self.disposed = False
+
+    def begin(self):
+        return _FakeBegin(self.conn)
+
+    async def dispose(self):
+        self.disposed = True
+
+
+# Canonical UUIDs for the seeded Vaneta DEMO graph.
+DB_TENANT_ID = UUID("aaaaaaaa-0000-4000-8000-000000000001")
+DB_AC_ACCOUNT = UUID("aaaaaaaa-0000-4000-8000-000000000002")
+DB_FI_ACCOUNT = UUID("aaaaaaaa-0000-4000-8000-000000000003")
+DB_BATCH_ID = UUID("aaaaaaaa-0000-4000-8000-000000000004")
+DB_ENROLLMENT_ID = UUID("aaaaaaaa-0000-4000-8000-000000000005")
+DB_PARTICIPANT_ID = UUID("aaaaaaaa-0000-4000-8000-000000000006")
+DB_SESSION_ID = UUID("aaaaaaaa-0000-4000-8000-000000000007")
+DB_INV1_ID = UUID("aaaaaaaa-0000-4000-8000-000000000008")
+DB_INV2_ID = UUID("aaaaaaaa-0000-4000-8000-000000000009")
+DB_PAYMENT_ID = UUID("aaaaaaaa-0000-4000-8000-00000000000a")
+
+
+def _lookup_results(*, alloc_total):
+    """The ten ``execute`` results ``_lookup`` consumes, in call order."""
+    ns = SimpleNamespace
+    return [
+        _FakeResult([ns(id=DB_TENANT_ID)]),  # 1. tenant
+        _FakeResult([]),  # 2. SET LOCAL app.bypass_rls
+        _FakeResult(  # 3. accounts (one per role)
+            [
+                ns(id=DB_AC_ACCOUNT, auth_subject=f"ac.{SLUG_VANETA}"),
+                ns(id=DB_FI_ACCOUNT, auth_subject=f"fi.{SLUG_VANETA}"),
+            ]
+        ),
+        _FakeResult([ns(id=DB_BATCH_ID, capacity=10)]),  # 4. batch
+        _FakeResult(  # 5. active enrollments
+            [ns(id=DB_ENROLLMENT_ID, participant_id=DB_PARTICIPANT_ID)]
+        ),
+        _FakeResult([ns(id=DB_SESSION_ID)]),  # 6. first session
+        _FakeResult([ns(id=DB_INV1_ID)]),  # 7. INV-VANETA-0001
+        _FakeResult([ns(id=DB_INV2_ID)]),  # 8. INV-VANETA-0002
+        _FakeResult(  # 9. verified payment for invoice 1
+            [ns(id=DB_PAYMENT_ID, recognized_amount=1_000_000)]
+        ),
+        _FakeResult([ns(total=alloc_total)]),  # 10. allocation SUM
+    ]
+
+
+def _install_fake_engine(monkeypatch, *, alloc_total):
+    """Patch ``create_async_engine``; return the recorded constructor calls."""
+    calls: list[tuple[str, dict[str, Any], _FakeEngine]] = []
+
+    def _create(dsn, **kwargs):
+        engine = _FakeEngine(_lookup_results(alloc_total=alloc_total))
+        calls.append((dsn, kwargs, engine))
+        return engine
+
+    monkeypatch.setattr(smoke_pilot_mod, "create_async_engine", _create)
+    return calls
+
+
+class TestLookupDatabaseMapping:
+    """``_lookup`` turns DB rows into the ``ids`` artefact every step consumes."""
+
+    @pytest.mark.parametrize(
+        "alloc_total, expected_amount",
+        [
+            (None, 0),  # COALESCE: NULL SUM -> 0
+            (1_000_000, 1_000_000),  # real SUM survives the `or` short-circuit
+        ],
+    )
+    async def test_lookup_maps_rows_into_ids(
+        self, monkeypatch, alloc_total, expected_amount
+    ) -> None:
+        calls = _install_fake_engine(monkeypatch, alloc_total=alloc_total)
+
+        ids = await smoke_pilot_mod._lookup(_settings_stub())
+
+        assert len(calls) == 1
+        dsn, kwargs, engine = calls[0]
+        # ``pool_pre_ping=True`` — a stale pooled connection would surface
+        # as a phantom "dev server unreachable" during the smoke run.
+        assert dsn == "postgresql://stub@localhost/db"
+        assert kwargs["pool_pre_ping"] is True
+        assert engine.disposed is True
+
+        assert ids == {
+            "tenant_id": DB_TENANT_ID,
+            "batch_id": DB_BATCH_ID,
+            "batch_capacity": 10,
+            "enrollments": [(DB_ENROLLMENT_ID, DB_PARTICIPANT_ID)],
+            "session_id": DB_SESSION_ID,
+            "inv1_id": DB_INV1_ID,
+            "inv2_id": DB_INV2_ID,
+            "payment_id": DB_PAYMENT_ID,
+            "expected_allocation_amount": expected_amount,
+            # Keys are the role prefix ("ac"), NOT the slug suffix ("vaneta").
+            "accounts": {"ac": DB_AC_ACCOUNT, "fi": DB_FI_ACCOUNT},
+        }
+
+    async def test_lookup_reads_past_rls_for_the_id_graph(
+        self, monkeypatch
+    ) -> None:
+        """The lookup must disable RLS before the account/enrollment reads."""
+        calls = _install_fake_engine(monkeypatch, alloc_total=0)
+        await smoke_pilot_mod._lookup(_settings_stub())
+
+        statements = calls[0][2].conn.statements
+        bypass = [s for s in statements if "bypass_rls" in s]
+        assert len(bypass) == 1
+        assert statements.index(bypass[0]) == 1  # immediately after tenant lookup
+
+    async def test_lookup_optional_verified_payment_absent_is_none(
+        self, monkeypatch
+    ) -> None:
+        """No verified payment row -> ``payment_id`` is None, not a crash."""
+
+        def _create(dsn, **kwargs):
+            results = _lookup_results(alloc_total=0)
+            results[8] = _FakeResult([])  # no verified_payment row
+            engine = _FakeEngine(results)
+            calls.append(engine)
+            return engine
+
+        calls: list[_FakeEngine] = []
+        monkeypatch.setattr(smoke_pilot_mod, "create_async_engine", _create)
+
+        ids = await smoke_pilot_mod._lookup(_settings_stub())
+        assert ids["payment_id"] is None
+        assert ids["expected_allocation_amount"] == 0
+
+
+# ---------------------------------------------------------------------------
+# step_01_login — empty access_token
+# ---------------------------------------------------------------------------
+
+
+class TestStep01EmptyToken:
+    """``if not access:`` must record step **1** as FAILED, not as 0 or pass."""
+
+    async def test_empty_access_token_records_step_1_failed(self) -> None:
+        rec = SmokeRecorder()
+
+        with patch(
+            "ksma.scripts.smoke_pilot._lookup",
+            new=patched_lookup(_make_ids(tenant_id=TENANT_ID)),
+        ), _use_mock_client(lambda req: _ok_json({"access_token": ""})):
+            result = await step_01_login(rec, _settings_stub())
+
+        assert result is None
+        assert rec.steps == [
+            (1, "login as ac@vaneta.id", False, "no access_token returned")
+        ]
+        assert rec.failing_step == 1
+
+
+# ---------------------------------------------------------------------------
+# Transport-error records — one per step helper
+# ---------------------------------------------------------------------------
+
+
+def _connection_refused(request: httpx.Request) -> httpx.Response:
+    raise httpx.ConnectError("connection refused")
+
+
+class TestTransportErrorRecords:
+    """Every ``except Exception`` branch must record ``ok=False``.
+
+    The ``False -> True`` mutants on those ``rec.record`` calls are killed
+    by asserting the full recorded tuple, not merely the detail string.
+    """
+
+    async def test_step_03_transport_error_records_failure(self) -> None:
+        rec = SmokeRecorder()
+        ids = _make_ids(extra={"ac_token": AC_TOKEN})
+
+        with _use_mock_client(_connection_refused):
+            await step_03_participants(rec, ids)
+
+        assert rec.steps == [
+            (3, "participants duplicate-suspect", False, "http: connection refused")
+        ]
+        assert rec.failing_step == 3
+
+    async def test_step_04_transport_error_records_failure(self) -> None:
+        rec = SmokeRecorder()
+        ids = _make_ids(extra={"ac_token": AC_TOKEN})
+
+        with _use_mock_client(_connection_refused):
+            await step_04_batches(rec, ids)
+
+        assert rec.steps == [
+            (4, "batch EN-A1-Okt2026 capacity/occupied", False, "http: connection refused")
+        ]
+        assert rec.failing_step == 4
+
+    async def test_step_05_06_transport_error_records_both_failed(self) -> None:
+        rec = SmokeRecorder()
+        ids = _make_ids()
+
+        def handler(req: httpx.Request) -> httpx.Response:
+            if req.method == "POST":
+                return _ok_json({"access_token": FI_TOKEN})
+            raise httpx.ConnectError("invoice service down")
+
+        with _use_mock_client(handler):
+            await step_05_06_invoices(rec, ids)
+
+        assert rec.steps == [
+            (
+                5,
+                f"invoice {ids['inv1_id']} status=paid",
+                False,
+                "http: invoice service down",
+            ),
+            (
+                6,
+                f"invoice {ids['inv2_id']} status=unpaid",
+                False,
+                "http: invoice service down",
+            ),
+        ]
+        assert rec.failing_step == 5
+
+    async def test_step_07_session_transport_error_records_failure(self) -> None:
+        rec = SmokeRecorder()
+        ids = _make_ids()
+
+        def handler(req: httpx.Request) -> httpx.Response:
+            if req.method == "POST":
+                return _ok_json({"access_token": IN_TOKEN})
+            raise httpx.ConnectError("session service down")
+
+        with _use_mock_client(handler):
+            await step_07_session(rec, ids)
+
+        assert rec.steps == [
+            (
+                7,
+                "session first effective+attendance",
+                False,
+                "http: session service down",
+            )
+        ]
+        assert rec.failing_step == 7
+
+    async def test_step_07_attendance_transport_error_records_failure(self) -> None:
+        """The attendance GET has its own ``except`` — it must also fail."""
+        rec = SmokeRecorder()
+        ids = _make_ids()
+
+        def handler(req: httpx.Request) -> httpx.Response:
+            if req.method == "POST":
+                return _ok_json({"access_token": IN_TOKEN})
+            if req.url.path.endswith("/attendance"):
+                raise httpx.ConnectError("attendance service down")
+            return _ok_json({"effective_revision_id": "rev-1"})
+
+        with _use_mock_client(handler):
+            await step_07_session(rec, ids)
+
+        assert rec.steps == [
+            (
+                7,
+                "session first effective+attendance",
+                False,
+                "http: attendance service down",
+            )
+        ]
+        assert rec.failing_step == 7
+
+    async def test_step_08_transport_error_records_failure(self) -> None:
+        rec = SmokeRecorder()
+        ids = _make_ids()
+
+        def handler(req: httpx.Request) -> httpx.Response:
+            if req.method == "POST":
+                return _ok_json({"access_token": ST_TOKEN})
+            raise httpx.ConnectError("portal service down")
+
+        with _use_mock_client(handler):
+            await step_08_portal_inbox(rec, ids)
+
+        assert rec.steps == [
+            (8, "portal/inbox for st@vaneta.id", False, "http: portal service down")
+        ]
+        assert rec.failing_step == 8
+
+    async def test_step_09_transport_error_records_failure(self) -> None:
+        rec = SmokeRecorder()
+        ids = _make_ids()
+
+        def handler(req: httpx.Request) -> httpx.Response:
+            if req.method == "POST":
+                return _ok_json({"access_token": AU_TOKEN})
+            raise httpx.ConnectError("audit service down")
+
+        with _use_mock_client(handler):
+            await step_09_audit(rec, ids)
+
+        assert rec.steps == [
+            (9, "audit FIN seeded allocation", False, "http: audit service down")
+        ]
+        assert rec.failing_step == 9
+
+
+# ---------------------------------------------------------------------------
+# Boundary assertions (the mutation-sensitive comparisons)
+# ---------------------------------------------------------------------------
+
+
+class TestStep03DuplicateSuspectBoundary:
+    """``dup_ok = False`` (line 376) is only observable when the response
+    still carries a non-empty ``duplicate_suspects`` list — otherwise the
+    ``if not suspects`` guard repairs the mutant.
+    """
+
+    async def test_missing_p0006_with_suspects_present_records_failure(self) -> None:
+        rec = SmokeRecorder()
+        ids = _make_ids(extra={"ac_token": AC_TOKEN})
+
+        body = {
+            "items": [{"participant_no": "P-0001"}],
+            "duplicate_suspects": [{"participant_no": "P-0001"}],
+        }
+
+        with _use_mock_client(lambda req: _ok_json(body)):
+            await step_03_participants(rec, ids)
+
+        assert rec.steps == [
+            (
+                3,
+                "participants duplicate-suspect (Sari)",
+                False,
+                "items had ['P-0001'], expected P-0001+P-0006",
+            )
+        ]
+        assert rec.failing_step == 3
+
+
+class TestStep0506Boundaries:
+    """``overdue_amount`` and ``active_allocation_total`` sit on the exact
+    boundaries 0 and 1 — the ``0 -> 1`` mutants survive any probe that only
+    uses "obviously wrong" values such as 999 or 50_000.
+    """
+
+    async def test_overdue_amount_of_one_rupiah_fails(self) -> None:
+        """``overdue_amount == 1`` is overdue; the mutant's ``!= 1`` passes."""
+        rec = SmokeRecorder()
+        ids = _make_ids()
+
+        def handler(req: httpx.Request) -> httpx.Response:
+            if req.method == "POST":
+                return _ok_json({"access_token": FI_TOKEN})
+            return _ok_json({
+                "payment_status": "paid",
+                "overdue_amount": 1,
+                "active_allocation_total": 1_000_000,
+            })
+
+        with _use_mock_client(handler):
+            await step_05_06_invoices(rec, ids)
+
+        assert rec.steps[0] == (
+            5,
+            f"invoice {ids['inv1_id']} status=paid",
+            False,
+            "overdue_amount=1",
+        )
+        assert rec.failing_step == 5
+
+    async def test_missing_allocation_total_defaults_to_zero(self) -> None:
+        """An absent ``active_allocation_total`` means 0, not 1."""
+        rec = SmokeRecorder()
+        ids = _make_ids()
+        ids["expected_allocation_amount"] = 1
+
+        def handler(req: httpx.Request) -> httpx.Response:
+            if req.method == "POST":
+                return _ok_json({"access_token": FI_TOKEN})
+            return _ok_json({
+                "payment_status": "paid",
+                "overdue_amount": 0,
+            })
+
+        with _use_mock_client(handler):
+            await step_05_06_invoices(rec, ids)
+
+        assert rec.steps[0] == (
+            5,
+            f"invoice {ids['inv1_id']} status=paid",
+            False,
+            "active_allocation_total=0 != expected 1",
+        )
+        assert rec.failing_step == 5
+
+    async def test_missing_overdue_amount_defaults_to_zero(self) -> None:
+        """An absent ``overdue_amount`` is 0, not 1 — the projection simply
+        omits the key for a clean invoice.
+        """
+        rec = SmokeRecorder()
+        ids = _make_ids()
+
+        def handler(req: httpx.Request) -> httpx.Response:
+            if req.method == "POST":
+                return _ok_json({"access_token": FI_TOKEN})
+            if req.url.path.endswith(str(ids["inv1_id"]) + "/status"):
+                return _ok_json({
+                    "payment_status": "paid",
+                    "active_allocation_total": 1_000_000,
+                })
+            return _ok_json({"payment_status": "unpaid"})
+
+        with _use_mock_client(handler):
+            await step_05_06_invoices(rec, ids)
+
+        assert rec.steps == [
+            (5, f"invoice {ids['inv1_id']} status=paid", True, ""),
+            (6, f"invoice {ids['inv2_id']} status=unpaid", True, ""),
+        ]
+        assert rec.failing_step is None
+
+    async def test_invoice_non_200_records_both_failed(self) -> None:
+        """A 500 from the invoice projection is a failure for both invoices."""
+        rec = SmokeRecorder()
+        ids = _make_ids()
+
+        def handler(req: httpx.Request) -> httpx.Response:
+            if req.method == "POST":
+                return _ok_json({"access_token": FI_TOKEN})
+            return httpx.Response(500, text="projection boom")
+
+        with _use_mock_client(handler):
+            await step_05_06_invoices(rec, ids)
+
+        assert len(rec.steps) == 2
+        for n, (step, _name, ok, detail) in enumerate(rec.steps, start=5):
+            assert step == n
+            assert ok is False
+            assert detail == "status=500: projection boom"
+        assert rec.failing_step == 5
+
+
+# ---------------------------------------------------------------------------
+# _async_main — elapsed reporting + exit code
+# ---------------------------------------------------------------------------
+
+
+class _FakeClock:
+    """Module-local ``time`` double — patched over ``smoke_pilot.time`` only
+    so the event loop's own clock is untouched.
+    """
+
+    def __init__(self, values):
+        self._values = list(values)
+
+    def monotonic(self):
+        if len(self._values) > 1:
+            return self._values.pop(0)
+        return self._values[0]
+
+
+async def _run_async_main(*, failing_step=None, clock=None):
+    """Drive ``_async_main`` over a healthy server with every step stubbed."""
+    ids = _make_ids()
+    calls: list[int] = []
+
+    async def fake_step_01(rec, settings):
+        calls.append(1)
+        return ids
+
+    def make_step(numbers):
+        async def _step(rec, ids):
+            for n in numbers:
+                calls.append(n)
+                if n == failing_step:
+                    rec.record(n, f"step {n}", False, "boom")
+            return None
+
+        return _step
+
+    patches = [patch("ksma.scripts.smoke_pilot.step_01_login", side_effect=fake_step_01)]
+    for name, numbers in (
+        ("step_03_participants", (3,)),
+        ("step_04_batches", (4,)),
+        ("step_05_06_invoices", (5, 6)),
+        ("step_07_session", (7,)),
+        ("step_08_portal_inbox", (8,)),
+        ("step_09_audit", (9,)),
+    ):
+        patches.append(patch(f"ksma.scripts.smoke_pilot.{name}", side_effect=make_step(numbers)))
+    ctxs = [_use_mock_client(lambda req: _ok_json({"status": "ok"}))] + patches
+    if clock is not None:
+        ctxs.append(patch.object(smoke_pilot_mod, "time", clock))
+
+    for ctx in ctxs:
+        ctx.start()
+    try:
+        result = await _async_main()
+    finally:
+        for ctx in reversed(ctxs):
+            ctx.stop()
+    return result, calls
+
+
+class TestAsyncMainElapsedAndExitCode:
+    async def test_health_elapsed_reported_in_milliseconds(self, capsys) -> None:
+        result, calls = await _run_async_main(clock=_FakeClock([100.0, 102.5]))
+        out = capsys.readouterr().out
+
+        assert calls == [1, 3, 4, 5, 6, 7, 8, 9]
+        # 10ms elapsed * 1000 -> "10ms" (the ``* -> /`` mutant prints "0ms").
+        assert "[smoke] server OK (10ms)" in out
+        # 102.5 - 100.0 -> "2.5s" (the ``- -> +`` mutant prints "202.5s").
+        assert "[smoke] elapsed 2.5s" in out
+        assert "PILOT SMOKE PASS" in out
+        assert result == 0
+
+    async def test_exit_code_1_when_a_step_fails(self, capsys) -> None:
+        result, _calls = await _run_async_main(
+            failing_step=4, clock=_FakeClock([0.0, 1.0])
+        )
+        out = capsys.readouterr().out
+
+        assert "PILOT SMOKE FAIL: step=4" in out
+        assert "[smoke] elapsed 1.0s" in out
+        assert result == 1
+
+
+# ---------------------------------------------------------------------------
+# Base64 padding sign — equivalence proof (deferred survivor :268)
+# ---------------------------------------------------------------------------
+
+
+# Raw base64url segments spanning every length 1..9 (hence every residue of
+# ``len(raw) % 4``) for the padding-equivalence proof below.
+_PADDING_EQUIVALENCE_SAMPLES = [
+    alphabet * length
+    for length in range(1, 10)
+    for alphabet in ("A", "BCDE", "0123")
+]
+
+
+class TestLoginJwtPaddingEquivalence:
+    """``padded = raw + "=" * (-len(raw) % 4)`` — the ``delete -`` mutant
+    yields ``len(raw) % 4``.
+
+    ``base64.urlsafe_b64decode`` runs in non-strict mode: it *tolerates*
+    over-padding (it drops the trailing partial quantum) exactly as it
+    tolerates under-padding. Exhaustive search over every raw segment of
+    length 1..9 (over three alphabets, plus a full 4-symbol alphabet up to
+    length 6) shows both paddings decode to identical bytes for every
+    input, so this survivor is equivalent and is deferred to the ADR
+    follow-up rather than papered over with a production-code change.
+    """
+
+    @pytest.mark.parametrize("raw", sorted(_PADDING_EQUIVALENCE_SAMPLES))
+    def test_padding_sign_is_unobservable(self, raw: str) -> None:
+        def _decode(padding: int):
+            try:
+                return base64.urlsafe_b64decode(raw + "=" * padding)
+            except Exception as exc:  # invalid base64 either way
+                return f"{type(exc).__name__}: {exc}"
+
+        # Segments of length 1 mod 4 are invalid base64 under BOTH paddings
+        # (the decoder raises identically); every other length decodes to
+        # the same bytes. Either way the padding sign is unobservable.
+        assert _decode(-len(raw) % 4) == _decode(len(raw) % 4)

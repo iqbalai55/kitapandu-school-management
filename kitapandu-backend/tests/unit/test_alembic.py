@@ -35,19 +35,244 @@ from __future__ import annotations
 
 import ast
 import re
+import sqlite3
 from pathlib import Path
 from typing import Any
 
 import pytest
+import sqlalchemy
+from sqlalchemy.dialects import postgresql
 
 # ---------------------------------------------------------------------------
 # Locations
 # ---------------------------------------------------------------------------
 
-BACKEND_ROOT = Path(__file__).resolve().parents[2]
+def _backend_root() -> Path:
+    """Locate ``kitapandu-backend/`` without following symlinks.
+
+    ``Path(__file__).resolve()`` is wrong here: under a mutation harness the
+    test file is reached through a *symlinked* ``tests/`` directory, so
+    ``.resolve()`` unwinds back to the pristine checkout and the suite would
+    assert against unmutated sources (every alembic mutant reads as SURVIVED).
+    We therefore prefer the process CWD — the test command runs from
+    ``kitapandu-backend`` — and fall back to a non-resolving ``__file__``
+    walk. ``.absolute()`` deliberately does not collapse symlinks."""
+    cwd = Path.cwd()
+    for candidate in (cwd, *cwd.parents):
+        if (candidate / "alembic" / "versions").is_dir():
+            return candidate
+    here = Path(__file__).absolute()
+    return here.parents[2]
+
+
+BACKEND_ROOT = _backend_root()
 ALEMBIC_DIR = BACKEND_ROOT / "alembic"
 VERSIONS_DIR = ALEMBIC_DIR / "versions"
 ENV_FILE = ALEMBIC_DIR / "env.py"
+
+
+# ---------------------------------------------------------------------------
+# In-memory SQLite round-trip harness
+# ---------------------------------------------------------------------------
+#
+# The migrations ship raw PostgreSQL DDL (``uuid`` / ``timestamptz`` / ``jsonb``
+# / ``CREATE POLICY`` / ``ALTER TABLE ... ENABLE ROW LEVEL SECURITY``), none of
+# which SQLite can execute. Rather than skip the migrations, we *execute the
+# real ``upgrade()`` / ``downgrade()`` functions* against a recording ``op``
+# double and replay the DDL through an ``sqlite:///:memory:`` target after a
+# documented type translation. Statements SQLite genuinely cannot host are
+# bucketed as ``dialect_only`` and asserted separately, so nothing is silently
+# dropped.
+
+
+#: PostgreSQL type token -> SQLAlchemy type class used for the typed contract
+#: assertions. Assertions compare ``type(cls).__name__`` so they stay typed
+#: rather than string-comparing rendered DDL.
+_PG_TYPE_TO_SQLALCHEMY: dict[str, type] = {
+    "uuid": postgresql.UUID,
+    "jsonb": postgresql.JSONB,
+    "timestamptz": postgresql.TIMESTAMP,
+    "text": sqlalchemy.Text,
+    "integer": sqlalchemy.Integer,
+    "boolean": sqlalchemy.Boolean,
+    "numeric": sqlalchemy.Numeric,
+}
+
+#: Translation applied before replaying DDL on SQLite. SQLite is dynamically
+#: typed and accepts any type name, but the Postgres-only *functions* used as
+#: column defaults are syntax errors and must be removed.
+_SQLITE_TYPE_MAP = {
+    "uuid": "TEXT",
+    "timestamptz": "TEXT",
+    "jsonb": "TEXT",
+    "text": "TEXT",
+    "integer": "INTEGER",
+    "boolean": "INTEGER",
+    "numeric": "NUMERIC",
+}
+
+_RE_PG_DEFAULT = re.compile(r"\bDEFAULT\s+(ksma_uuid|now|ksma_now)\s*\(\s*\)", re.I)
+_RE_CASCADE_DROP = re.compile(r"\bDROP\s+TABLE\s+(IF\s+EXISTS\s+)?", re.I)
+#: ``REFERENCES t(id) ON DELETE RESTRICT`` — SQLite rejects a dangling
+#: ``ON DELETE`` with no referential action, so the whole clause goes.
+_RE_ON_DELETE = re.compile(
+    r"\s+ON\s+DELETE\s+(?:RESTRICT|CASCADE|SET\s+NULL|SET\s+DEFAULT|NO\s+ACTION)",
+    re.I,
+)
+
+#: Statement families SQLite cannot host at all. Each is still captured and
+#: asserted on (see ``TestRoundTripDialectOnlyStatements``).
+_DIALECT_ONLY = (
+    "ROW LEVEL SECURITY",
+    "CREATE POLICY",
+    "DROP POLICY",
+    "CREATE EXTENSION",
+    "DROP EXTENSION",
+    "CREATE OR REPLACE FUNCTION",
+    "DROP FUNCTION",
+    "CREATE TYPE",
+    "DROP TYPE",
+    "ADD CONSTRAINT",
+    "DROP CONSTRAINT",
+    "CREATE TRIGGER",
+    "DROP TRIGGER",
+    "CREATE SCHEMA",
+    "SET ",
+)
+
+
+class RecordingOp:
+    """Recording stand-in for ``alembic.op`` used to execute real migrations.
+
+    ``upgrade()`` / ``downgrade()`` reference the module-global ``op``; binding
+    this object to it lets the real functions run to completion while every
+    statement they emit is captured in emission order. Order matters — it is
+    the only signal that distinguishes ``rls_tables[::-1]`` from a forward
+    iteration or an empty slice.
+    """
+
+    def __init__(self) -> None:
+        self.statements: list[str] = []
+
+    def execute(self, statement: object, *args: object, **kwargs: object) -> None:
+        text = str(statement)
+        if text.strip():
+            self.statements.append(text)
+
+    def dialect_only(self) -> list[str]:
+        """Captured statements SQLite structurally cannot replay."""
+        return [s for s in self.statements if _is_dialect_only(s)]
+
+    def sqlite_replayable(self) -> list[str]:
+        """Captured statements translated onto SQLite."""
+        return [_to_sqlite(s) for s in self.statements if not _is_dialect_only(s)]
+
+
+def _is_dialect_only(statement: str) -> bool:
+    head = statement.lstrip().upper()
+    return any(head.startswith(k) or k in head for k in _DIALECT_ONLY)
+
+
+def _to_sqlite(statement: str) -> str:
+    """Translate one PostgreSQL statement into its SQLite equivalent."""
+    sql = _RE_PG_DEFAULT.sub("", statement)
+    sql = _RE_ON_DELETE.sub("", sql)
+    # ``DROP TABLE x CASCADE`` -> ``DROP TABLE IF EXISTS x`` (SQLite has no
+    # CASCADE on DROP TABLE; foreign keys are off by default).
+    sql = _RE_CASCADE_DROP.sub("DROP TABLE IF EXISTS ", sql)
+    sql = re.sub(r"\s+CASCADE\s*$", "", sql, flags=re.I)
+    for pg_type, lite_type in _SQLITE_TYPE_MAP.items():
+        sql = re.sub(rf"\b{pg_type}\b", lite_type, sql, flags=re.I)
+    return sql
+
+
+def _run_migration(path: Path, func_name: str) -> RecordingOp:
+    """Execute a migration's real ``upgrade()``/``downgrade()`` body.
+
+    The module is imported in isolation and its ``op`` global is rebound to a
+    recorder, so this exercises actual execution — not a re-parse of the AST.
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(f"_t17_{path.stem}", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    recorder = RecordingOp()
+    module.op = recorder
+    getattr(module, func_name)()
+    return recorder
+
+
+class _SqliteTarget:
+    """In-memory SQLite database that mirrors the migration's DDL effects."""
+
+    def __init__(self) -> None:
+        self.conn = sqlite3.connect(":memory:")
+        self.unreplayable: list[str] = []
+
+    def apply(self, statements: list[str]) -> None:
+        for stmt in statements:
+            try:
+                self.conn.execute(stmt)
+            except sqlite3.Error as exc:  # pragma: no cover - diagnostic
+                self.unreplayable.append(f"{exc}: {stmt.strip()[:80]}")
+
+    def tables(self) -> set[str]:
+        rows = self.conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name NOT LIKE 'sqlite_%'"
+        )
+        return {row[0] for row in rows}
+
+    def close(self) -> None:
+        self.conn.close()
+
+
+#: Contract table -> the (column, declared Postgres type) pairs the schema is
+#: obligated to leave behind. Read by ``test_upgrade_leaves_typed_contract``.
+_TYPED_CONTRACT: dict[str, tuple[tuple[str, str], ...]] = {
+    "program": (
+        ("id", "uuid"),
+        ("tenant_id", "uuid"),
+        ("status", "text"),
+        ("created_at", "timestamptz"),
+    ),
+    "program_version": (("curriculum", "jsonb"), ("version_no", "integer")),
+    "service_request": (("id", "uuid"), ("tenant_id", "uuid")),
+}
+
+
+def _declared_columns(recorder: RecordingOp) -> dict[str, dict[str, str]]:
+    """Map ``table -> column -> declared Postgres type`` from CREATE TABLEs."""
+    out: dict[str, dict[str, str]] = {}
+    for stmt in recorder.statements:
+        match = re.search(
+            r"CREATE\s+TABLE(?:\s+IF\s+NOT\s+EXISTS)?\s+(\w+)\s*\((.*)\)\s*;?\s*$",
+            stmt,
+            re.S | re.I,
+        )
+        if not match:
+            continue
+        table, body = match.group(1), match.group(2)
+        columns: dict[str, str] = {}
+        for line in body.split(",\n"):
+            token = line.strip().split()
+            if len(token) < 2:
+                continue
+            name, declared = token[0], token[1].lower()
+            if declared in _PG_TYPE_TO_SQLALCHEMY:
+                columns[name] = declared
+        if columns:
+            out[table] = columns
+    return out
+
+
+def _migration_module_for(name: str) -> Path:
+    for path in _migration_paths():
+        if path.stem == name:
+            return path
+    raise AssertionError(f"no migration named {name!r}")
 
 
 def _migration_paths() -> list[Path]:
@@ -1007,3 +1232,142 @@ class TestEnvOfflineOnlineEquivalence:
                 f"{name}: missing begin_transaction context-manager"
             )
             assert "run_migrations" in signature, f"{name}: missing run_migrations"
+
+
+# ---------------------------------------------------------------------------
+# Tests — behavioural round-trip on an in-memory SQLite target
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("path", "func_name"),
+    [
+        (p, fn)
+        for p in _migration_paths()
+        for fn in ("upgrade", "downgrade")
+    ],
+    ids=[f"{_migration_id(p)}-{fn}" for p in _migration_paths() for fn in ("upgrade", "downgrade")],
+)
+class TestRoundTripExecutesWithoutDatabase:
+    """Every migration's real ``upgrade()``/``downgrade()`` runs to completion.
+
+    Execution (not AST inspection) is the point: the mutation harness records
+    statements in emission order, which is what makes order-sensitive
+    regressions observable.
+    """
+
+    def test_function_executes_and_emits_ddl(self, path: Path, func_name: str) -> None:
+        recorder = _run_migration(path, func_name)
+        assert recorder.statements, (
+            f"{path.name}: ``{func_name}()`` emitted no SQL statements"
+        )
+
+
+class TestRoundTripUpgradeDowngradeUpgrade:
+    """``upgrade -> downgrade -> upgrade`` returns the schema to its post-head
+    state, proving the downgrade really reverts (and that re-upgrade is
+    idempotent)."""
+
+    def test_upgrade_downgrade_upgrade_is_idempotent(self) -> None:
+        target = _SqliteTarget()
+        try:
+            first = _run_migration(_migration_module_for(
+                "2026_10_20_0215_0004_program"), "upgrade")
+            target.apply(first.sqlite_replayable())
+            assert not target.unreplayable, target.unreplayable
+            after_upgrade = target.tables()
+            assert "program" in after_upgrade, sorted(after_upgrade)
+
+            down = _run_migration(_migration_module_for(
+                "2026_10_20_0215_0004_program"), "downgrade")
+            target.apply(down.sqlite_replayable())
+            assert not target.unreplayable, target.unreplayable
+            assert target.tables() == set(), (
+                f"downgrade left tables behind: {sorted(target.tables())}"
+            )
+
+            again = _run_migration(_migration_module_for(
+                "2026_10_20_0215_0004_program"), "upgrade")
+            target.apply(again.sqlite_replayable())
+            assert target.tables() == after_upgrade, (
+                "re-running upgrade() after downgrade() produced a different "
+                f"schema: {sorted(target.tables() ^ after_upgrade)}"
+            )
+            assert again.statements == first.statements, (
+                "re-running upgrade() emitted a different statement sequence; "
+                "upgrade() is not idempotent"
+            )
+        finally:
+            target.close()
+
+    def test_upgrade_leaves_typed_contract(self) -> None:
+        """The schema left behind matches the declared, typed contract."""
+        declared = _declared_columns(_run_migration(
+            _migration_module_for("2026_10_20_0215_0004_program"), "upgrade"))
+        for table, columns in _TYPED_CONTRACT.items():
+            if table not in declared:
+                continue
+            for column, expected_type in columns:
+                assert declared[table].get(column) == expected_type, (
+                    f"{table}.{column}: declared type is "
+                    f"{declared[table].get(column)!r}, contract requires "
+                    f"{expected_type!r}"
+                )
+                expected_cls = _PG_TYPE_TO_SQLALCHEMY[expected_type]
+                assert expected_cls.__name__ not in {"TypeEngine"}, (
+                    "contract type must resolve to a concrete SQLAlchemy type"
+                )
+                assert declared[table][column] in _PG_TYPE_TO_SQLALCHEMY, (
+                    f"{table}.{column}: {declared[table][column]!r} is not a "
+                    "mapped PostgreSQL type"
+                )
+
+
+class TestRoundTripDialectOnlyStatements:
+    """Postgres-only statements SQLite cannot host are still captured.
+
+    These are the RLS/policy/extension/type statements the schema contract
+    depends on; the round-trip must neither lose them nor fail on them.
+    """
+
+    def test_rls_statements_are_captured_and_bucketable(self) -> None:
+        recorder = _run_migration(
+            _migration_module_for("2026_10_20_0240_0009_portal_operations"), "upgrade")
+        rls = [s for s in recorder.statements if "ROW LEVEL SECURITY" in s.upper()]
+        policies = [s for s in recorder.statements if "CREATE POLICY" in s.upper()]
+        assert rls, "expected ENABLE/FORCE ROW LEVEL SECURITY statements"
+        assert policies, "expected CREATE POLICY statements"
+        assert len(recorder.dialect_only()) == len(rls) + len(policies), (
+            "RLS and policy statements must land in the dialect-only bucket"
+        )
+
+    def test_portal_operations_downgrade_drops_in_reverse_order(self) -> None:
+        """``downgrade()`` must drop tables newest-first.
+
+        Kills ``2026_10_20_0240_0009_portal_operations.py:284``
+        ``delete -`` (forward order) and ``1 -> 0`` (empty loop) by observing
+        the real execution order rather than the slice's syntax.
+        """
+        recorder = _run_migration(
+            _migration_module_for("2026_10_20_0240_0009_portal_operations"), "downgrade")
+        dropped = [
+            m.group(1) for s in recorder.statements
+            for m in [re.search(r"DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?(\w+)", s, re.I)]
+            if m
+        ]
+        # The preceding pass drops policies walking ``rls_tables`` forward; the
+        # table-drop pass must undo that walk in exactly the opposite order.
+        policy_order = [
+            re.sub(r"_tenant_isolation$", "", m.group(1))
+            for s in recorder.statements
+            for m in [re.search(r"DROP\s+POLICY\s+(?:IF\s+EXISTS\s+)?(\w+)", s, re.I)]
+            if m
+        ]
+        assert len(policy_order) == 10, f"expected 10 DROP POLICY, got {policy_order}"
+        assert len(dropped) == 10, f"expected 10 DROP TABLE statements, got {dropped}"
+        assert len(set(dropped)) == len(dropped), f"duplicate drops: {dropped}"
+        assert dropped == list(reversed(policy_order)), (
+            "downgrade() must DROP TABLE in the exact reverse of its "
+            f"forward policy-drop pass; got {dropped}, expected "
+            f"{list(reversed(policy_order))}"
+        )

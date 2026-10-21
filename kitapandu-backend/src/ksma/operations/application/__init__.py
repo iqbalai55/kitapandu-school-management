@@ -890,7 +890,14 @@ async def run_export(
         export_job_id,
         result_attachment_id=result_attachment_id,
         status=ExportStatus.READY,
-        expires_at=job.as_of + timedelta(seconds=ttl_seconds),
+        # T30 D5: ``expires_at`` is computed once by ``queue_export``
+        # (:818) from the caller's ``as_of`` and persisted on the
+        # ``ExportJob``. Re-deriving it here from ``job.as_of`` made the
+        # value depend on whatever the DB round-trip returned, which
+        # can drift if precision is normalised between the two reads.
+        # Reading the persisted value keeps the lifetime anchored to
+        # the original decision.
+        expires_at=job.expires_at,
     )
     job.status = ExportStatus.READY
     job.result_attachment_id = result_attachment_id
@@ -972,7 +979,14 @@ async def define_metric(
     if effective_from is None:
         effective_from = clock().now()
     if effective_until is None:
-        effective_until = datetime.now(UTC) + timedelta(days=365 * 100)
+        # T30 D6: every other timestamp in this module is sourced from
+        # the injected ``clock()`` so freezegun-driven tests stay
+        # deterministic. Pinning ``effective_until`` to wall-clock at
+        # process-start made this metric's life-time a function of when
+        # the process booted, which is almost certainly not what a caller
+        # of ``define_metric(...)`` without an explicit ``effective_until``
+        # expects.
+        effective_until = clock().now() + timedelta(days=365 * 100)
 
     metric = MetricDefinition(
         tenant_id=ctx.tenant_id,

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import FrozenInstanceError
-from datetime import UTC
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
@@ -289,3 +289,121 @@ def test_replay_after_grant_revocation_yields_allowed_false() -> None:
     # The reason string is a wire-level diagnostic. We don't pin the exact
     # text (too brittle), but it MUST be present and non-empty.
     assert decision.reason
+
+# ---------------------------------------------------------------------------
+# Ticket #27 — spec #16 user story #12: the retry contract.
+#   * a ``failed`` record is *cleared* so the caller may retry (R21)
+#   * a fresh record expires 24h after registration (default ``ttl_seconds``)
+# ---------------------------------------------------------------------------
+
+
+def _ctx(*, request_hash: str, action_id: str = "FIN-A05") -> IdempotencyContext:
+    return IdempotencyContext(
+        raw_key="abc-123",
+        fingerprint="some-fingerprint",
+        request_hash=request_hash,
+        action_id=action_id,
+        subject_account_id=uuid4(),
+        tenant_id=uuid4(),
+    )
+
+
+@pytest.mark.asyncio
+async def test_check_or_register_returns_in_progress_for_concurrent_request() -> None:
+    """A concurrent in-flight request must be told to retry, not re-registered."""
+    from ksma.shared.idempotency import check_or_register  # noqa: PLC0415
+
+    existing_id = uuid4()
+    request_hash = "abcd" * 16
+    session = _FakeAsyncSession(
+        lookup_rows=[
+            _FakeRow(
+                id=existing_id,
+                status="in_progress",
+                request_hash=request_hash,
+                result_ref=None,
+            )
+        ]
+    )
+
+    record = await check_or_register(session, ctx=_ctx(request_hash=request_hash))
+
+    assert record is not None
+    assert record.id == existing_id
+    assert record.status == "in_progress"
+    assert record.result_ref is None
+    # No DELETE / re-INSERT: the concurrent row is left alone.
+    assert len(session.execute_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_check_or_register_clears_failed_record_and_retries() -> None:
+    """A ``failed`` record is deleted so the request proceeds; the DELETE is
+    what makes the retry idempotent-safe (kills ``status == 'in_progress'``
+    flipped to ``!=``, which would short-circuit and replay a bogus record).
+    """
+    from ksma.shared.idempotency import check_or_register  # noqa: PLC0415
+
+    existing_id = uuid4()
+    request_hash = "abcd" * 16
+    session = _FakeAsyncSession(
+        lookup_rows=[
+            _FakeRow(
+                id=existing_id, status="failed", request_hash=request_hash, result_ref=None
+            )
+        ]
+    )
+
+    record = await check_or_register(session, ctx=_ctx(request_hash=request_hash))
+
+    assert record is None  # caller proceeds with the real work
+    assert len(session.execute_calls) == 3
+    delete_sql, delete_params = session.execute_calls[1]
+    assert "DELETE FROM idempotency_record" in delete_sql
+    assert delete_params == {"id": str(existing_id)}
+    insert_sql, insert_params = session.execute_calls[2]
+    assert "INSERT INTO idempotency_record" in insert_sql
+    assert insert_params["rh"] == request_hash
+    assert insert_params["act"] == "FIN-A05"
+
+
+@pytest.mark.asyncio
+async def test_check_or_register_default_ttl_is_24_hours() -> None:
+    """Default ``ttl_seconds`` is ``24 * 3600`` and ``expires_at`` is in the
+    FUTURE (kills ``* -> /`` and ``+ -> -`` on the expiry arithmetic)."""
+    from ksma.shared.idempotency import check_or_register  # noqa: PLC0415
+
+    session = _FakeAsyncSession(lookup_rows=[])
+    before = datetime.now(UTC)
+
+    assert await check_or_register(session, ctx=_ctx(request_hash="f" * 64)) is None
+
+    after = datetime.now(UTC)
+    assert len(session.execute_calls) == 2
+    insert_sql, insert_params = session.execute_calls[1]
+    assert "INSERT INTO idempotency_record" in insert_sql
+
+    expires_at = insert_params["exp"]
+    assert expires_at.tzinfo is not None
+    assert before + timedelta(seconds=24 * 3600) <= expires_at
+    assert expires_at <= after + timedelta(seconds=24 * 3600)
+
+
+@pytest.mark.asyncio
+async def test_check_or_register_honours_explicit_ttl_seconds() -> None:
+    """An explicit ``ttl_seconds`` overrides the 24h default."""
+    from ksma.shared.idempotency import check_or_register  # noqa: PLC0415
+
+    session = _FakeAsyncSession(lookup_rows=[])
+    before = datetime.now(UTC)
+
+    assert (
+        await check_or_register(session, ctx=_ctx(request_hash="f" * 64), ttl_seconds=60)
+        is None
+    )
+
+    after = datetime.now(UTC)
+    _, insert_params = session.execute_calls[1]
+    expires_at = insert_params["exp"]
+    assert before + timedelta(seconds=60) <= expires_at
+    assert expires_at <= after + timedelta(seconds=60)

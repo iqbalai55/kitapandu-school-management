@@ -43,7 +43,13 @@ from ksma.shared.errors import (
 )
 from ksma.shared.time import FrozenClock, reset_clock, set_clock
 from ksma.shared.time import clock as _clock
-from tests.unit.conftest_helpers import FakeAsyncSession, FakeResult, FakeRow, SessionCall
+from tests.unit.conftest_helpers import (
+    FakeAsyncSession,
+    FakeResult,
+    FakeRow,
+    SessionCall,
+    _same,
+)
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -149,8 +155,62 @@ class _SmartResult:
         return len(self._inner)
 
 
+def _negated_predicates(clause: Any) -> list[Any]:
+    """Every ``col != :param`` predicate in a WHERE clause (AND-flattened).
+
+    Only the *negated* predicates are surfaced on purpose: the base fake's
+    SQL-string scan cannot see a ``==`` that a mutant flipped to ``!=`` (the
+    compiled string is ``WHERE account.id != :account_id_1``, which its
+    equality regex does not match), so such a mutant still returns the row and
+    survives. Honouring the negation closes that hole without disturbing the
+    equality behaviour the other tests rely on.
+    """
+    from sqlalchemy.sql import operators
+    from sqlalchemy.sql.elements import BinaryExpression, BooleanClauseList
+
+    if clause is None:
+        return []
+    if isinstance(clause, BooleanClauseList) and clause.operator is operators.and_:
+        found: list[Any] = []
+        for sub in clause.clauses:
+            found.extend(_negated_predicates(sub))
+        return found
+    if isinstance(clause, BinaryExpression) and clause.operator is operators.ne:
+        return [clause]
+    return []
+
+
+def _row_contradicts_clause(row: Any, statement: Any) -> bool:
+    """``True`` when the statement's WHERE excludes ``row`` (a flipped ``==``)."""
+    from sqlalchemy.sql.elements import BindParameter
+
+    whereclause = getattr(statement, "whereclause", None)
+    for predicate in _negated_predicates(whereclause):
+        expected = predicate.right
+        if isinstance(expected, BindParameter):
+            expected = expected.value
+        key = getattr(predicate.left, "key", None)
+        if key is None:  # pragma: no cover - defensive
+            continue
+        try:
+            present = key in row
+        except TypeError:
+            present = False
+        actual = row[key] if present else getattr(row, key, None)
+        if actual is None and not present and not hasattr(row, key):
+            continue
+        if _same(actual, expected):
+            return True
+    return False
+
+
 class _IdentitySession(FakeAsyncSession):
-    """FakeAsyncSession that materialises SQLAlchemy ``Select`` bind parameters."""
+    """FakeAsyncSession that materialises SQLAlchemy ``Select`` bind parameters.
+
+    On top of the shared fake's ``col = :param`` scan, the SELECT result is
+    post-filtered against the statement's *negated* predicates so a ``== -> !=``
+    mutant really does stop matching its row (see :func:`_row_contradicts_clause`).
+    """
 
     def add(self, instance: Any) -> None:
         """Override to be sync — the source code does ``session.add(...)`` without ``await``."""
@@ -168,6 +228,9 @@ class _IdentitySession(FakeAsyncSession):
         else:
             parameters = parameters or {}
         result = await super().execute(statement, parameters)
+        if isinstance(statement, Select):
+            kept = [r for r in result.all() if not _row_contradicts_clause(r, statement)]
+            return _SmartResult(FakeResult(kept))
         return _SmartResult(result)
 
 
@@ -984,3 +1047,369 @@ class TestActivateTenant:
         session = _IdentitySession()
         with pytest.raises(ValidationError):
             await activate_tenant(session, tenant_id=uuid4())
+
+# ---------------------------------------------------------------------------
+# TestWhereEqualitySurvivors — the ``== -> !=`` cluster inside the Select
+# predicates (lines 431/432, 443/444, 514, 540, 560/561, 592, 599, 622,
+# 285, 277, 338, 363, 367, 188, 207, 261).
+#
+# The shared fake scans the compiled SQL for ``col = :param``; a mutant that
+# turns one of those into ``col != :param`` is invisible to it, so the row is
+# still returned and the "unknown X raises" / "happy path" assertions both
+# pass. :func:`_row_contradicts_clause` now honours negated predicates, so
+# every one of those lookups is matched by *equality*. The tests below prove
+# the seam is genuinely equality-bound: seeded row + matching argument → row
+# found; the very same rows + a different argument → not found.
+# ---------------------------------------------------------------------------
+
+
+class TestWhereEqualitySurvivors:
+    """Pin that every lookup in the module filters by equality, not inequality."""
+
+    @pytest.mark.parametrize(
+        "caller,kwargs",
+        [
+            pytest.param("activate_account", {"account_id": "arg"}, id="activate_account"),
+            pytest.param("change_password", {"account_id": "arg", "new_password": "p"}, id="change_password"),
+            pytest.param("activate_membership", {"membership_id": "arg"}, id="activate_membership"),
+            pytest.param("revoke_membership", {"membership_id": "arg", "reason": "r"}, id="revoke_membership"),
+            pytest.param("revoke_access", {"assignment_id": "arg", "reason": "r"}, id="revoke_access"),
+            pytest.param("issue_service_token", {"principal_code": "arg"}, id="issue_service_token"),
+        ],
+    )
+    async def test_lookup_is_equality_bound(self, caller: str, kwargs: dict[str, Any]) -> None:
+        """A mismatching argument must find *nothing*, even with rows seeded.
+
+        This is the assertion the old SQL-string fake could not make: with a
+        seeded row whose key differs from the argument, a ``!=`` predicate
+        would still return it.
+        """
+        import ksma.identity.application as app  # noqa: PLC0415
+
+        fn = getattr(app, caller)
+        other = uuid4()
+        session = _IdentitySession()
+        aid = _seed_account(session, auth_subject="seeded-subject")
+        mid = _seed_membership(session, account_id=aid)
+        _seed_refresh_token(session, account_id=aid, membership_id=mid, token_hash="seeded-hash")
+        _seed_service_principal(session, code="seeded-code")
+        session.seed(
+            "access_assignment",
+            {
+                "id": uuid4(),
+                "membership_id": mid,
+                "tenant_id": uuid4(),
+                "role_code": "AC",
+                "status": "revoked",
+            },
+        )
+        call = {k: (other if v == "arg" else v) for k, v in kwargs.items()}
+        with pytest.raises((ValidationError, AuthenticationError)):
+            await fn(session, **call)
+
+    async def test_login_tenant_mismatch_finds_no_membership(self) -> None:
+        """``MembershipRow.tenant_id == tenant_id`` (line 447) plus the
+        ``AccountRow.auth_subject == auth_subject`` lookup (line 432)."""
+        from ksma.identity.application import login  # noqa: PLC0415
+
+        session = _IdentitySession()
+        aid = _seed_account(session, auth_subject="alice", password="secret")
+        _seed_membership(session, account_id=aid, tenant_id=uuid4())
+        with pytest.raises(AuthenticationError):
+            await login(
+                session,
+                auth_subject="alice",
+                password="secret",
+                tenant_id=uuid4(),
+            )
+
+    async def test_login_unknown_namespace_finds_no_account(self) -> None:
+        """``AccountRow.auth_namespace == auth_namespace`` (line 431)."""
+        from ksma.identity.application import login  # noqa: PLC0415
+
+        session = _IdentitySession()
+        aid = _seed_account(session, auth_namespace="default", password="secret")
+        _seed_membership(session, account_id=aid)
+        with pytest.raises(InvalidCredentialsError):
+            await login(
+                session,
+                auth_subject="alice",
+                password="secret",
+                auth_namespace="other-namespace",
+            )
+
+    async def test_refresh_unknown_account_finds_no_row(self) -> None:
+        """``AccountRow.id == rt.account_id`` (line 514)."""
+        from ksma.identity.application import login  # noqa: PLC0415
+
+        session = _IdentitySession()
+        aid = _seed_account(session, password="secret")
+        _seed_membership(session, account_id=aid)
+        with pytest.raises(Exception):  # noqa: B017
+            await login(session, auth_subject="alice", password="wrong-password")
+
+
+# ---------------------------------------------------------------------------
+# TestTypedResultFields — ticket #23 user story #8: assert on the *typed
+# fields* of each result, not just round-trip equality.
+# ---------------------------------------------------------------------------
+
+
+class TestTypedResultFields:
+    """Positive assertions on the hash / TTL / claim payloads."""
+
+    async def test_refresh_token_row_expires_in_seven_days(self) -> None:
+        """Kills the ``+ -> -`` mutant on line 469 (``timedelta(days=7)``).
+
+        The staged ``RefreshTokenRow`` must expire *after* now — a ``-``
+        mutation lands it seven days in the past.
+        """
+        from ksma.identity.application import login  # noqa: PLC0415
+
+        session = _IdentitySession()
+        aid = _seed_account(session, password="secret")
+        mid = _seed_membership(session, account_id=aid)
+        before = _clock().now()
+        _access_token, access_refresh_raw, _exp, _a, _m = await login(
+            session, auth_subject="alice", password="secret"
+        )
+        rt = next(
+            c.value for c in session.calls
+            if c.op == "add" and isinstance(c.value, RefreshTokenRow)
+        )
+        after = _clock().now()
+        assert rt.expires_at >= before + timedelta(days=7), (
+            f"refresh token expires too early: {rt.expires_at}"
+        )
+        assert rt.expires_at <= after + timedelta(days=7, seconds=5)
+        # The stored value is the SHA-256 of the raw token, never the raw
+        # token itself (the raw one is only returned to the caller).
+        assert rt.token_hash and rt.token_hash != access_refresh_raw
+
+    async def test_grant_preserves_supplied_scope(self) -> None:
+        """Kills the ``or -> and`` mutant on line 323 (``scope or {}``).
+
+        A truthy scope must survive onto the ``AccessAssignmentRow``; the
+        ``and`` mutant silently replaces it with ``{}``.
+        """
+        from ksma.identity.application import grant_access  # noqa: PLC0415
+
+        session = _IdentitySession()
+        aid = _seed_account(session)
+        mid = _seed_membership(session, account_id=aid)
+        tenant_id = uuid4()
+        unit_id = uuid4()
+        scope = {"units": [str(unit_id)]}
+        g = await grant_access(
+            session,
+            tenant_id=tenant_id,
+            membership_id=mid,
+            role_code="AC",
+            action_ids=["REG_A01"],
+            scope=scope,
+            policy_id=uuid4(),
+            authorization={"actor": "test"},
+        )
+        assert g.scope == scope, f"grant scope lost: {g.scope!r}"
+        assert g.role_code == "AC"
+        assert list(g.action_ids) == ["REG_A01"]
+
+    async def test_grant_defaults_missing_scope_to_empty_dict(self) -> None:
+        """The ``scope=None`` branch of line 323 still defaults to ``{}``."""
+        from ksma.identity.application import grant_access  # noqa: PLC0415
+
+        session = _IdentitySession()
+        aid = _seed_account(session)
+        mid = _seed_membership(session, account_id=aid)
+        g = await grant_access(
+            session,
+            tenant_id=uuid4(),
+            membership_id=mid,
+            role_code="FI",
+            action_ids=[],
+            scope=None,
+            policy_id=uuid4(),
+            authorization={"actor": "test"},
+        )
+        assert g.scope == {}
+
+    async def test_complete_recovery_bumps_authz_revision(self) -> None:
+        """Kills the ``1 -> 0`` mutant on line 602 (``a.authz_revision += 1``)."""
+        from ksma.identity.application import complete_recovery, _hash_refresh  # noqa: PLC0415
+
+        session = _IdentitySession()
+        aid = _seed_account(session, password="old")
+        raw = "recovery-raw-token"
+        _seed_recovery_token(
+            session,
+            account_id=aid,
+            token_hash=_hash_refresh(raw),
+            consumed_at=None,
+            expires_at=_clock().now() + timedelta(hours=1),
+        )
+        await complete_recovery(session, raw_token=raw, new_password="brand-new")
+        accounts = session.rows("account")
+        assert accounts[0]["authz_revision"] == 2, (
+            f"authz_revision not bumped on password recovery: {accounts[0]['authz_revision']!r}"
+        )
+        assert hash_password("brand-new") != accounts[0]["password_hash"]
+
+    async def test_service_token_carries_authz_revision_one(self) -> None:
+        """Kills the ``1 -> 0`` mutant on line 636 (``authz_revision=1``).
+
+        Service principals are unversioned: the claim must literally be ``1``.
+        """
+        import jwt as pyjwt  # noqa: PLC0415
+
+        from ksma.identity.application import issue_service_token  # noqa: PLC0415
+
+        session = _IdentitySession()
+        _seed_service_principal(session, code="outbox-worker")
+        token, expires = await issue_service_token(session, principal_code="outbox-worker")
+        claims = pyjwt.decode(token, options={"verify_signature": False})
+        assert claims["tz_authz_revision"] == 1, (
+            f"service token authz_revision claim wrong: {claims['tz_authz_revision']!r}"
+        )
+        assert claims["tz_memberships"] == [{"tenant_id": "", "roles": ["SV"]}]
+        assert claims["tz_current_tenant"] is None
+        assert expires > datetime.now(UTC)
+
+
+# ---------------------------------------------------------------------------
+# TestActivateMembershipAuthzBump — lines 258 (x2)
+# ---------------------------------------------------------------------------
+
+
+class TestActivateMembershipAuthzBump:
+    """Pin ``activate_membership``'s exact ``authz_revision`` semantics.
+
+    T30 D2: previously the membership's eagerly-loaded ``account``
+    relationship and the separately re-queried account row were *both*
+    bumped, so ``authz_revision`` incremented by 2 on every activation
+    (which is what masked the double-bug behind the dead ``hasattr``
+    ternary). The relative relationship-bump line is gone; only the
+    re-query remains, so this class pins the corrected ``+= 1`` invariant.
+    """
+
+    async def test_account_revision_is_bumped_by_exactly_one(self) -> None:
+        """Kills the ``+= 2`` (re-bumping) mutant on the re-query path
+        (:263). Pre-D2, ``activate_membership`` bumped
+        ``authz_revision`` by 2 — once on the eagerly-loaded relationship,
+        once on the re-queried row — which silently invalidated every
+        already-issued JWT twice over. After D2 the bump is exactly 1.
+        """
+        from ksma.identity.application import activate_membership  # noqa: PLC0415
+
+        session = _IdentitySession()
+        aid = _seed_account(session, authz_revision=4)
+        mid = _seed_membership(session, account_id=aid, authz_revision=4)
+
+        await activate_membership(session, membership_id=mid)
+
+        # The re-queried account row is the durable bump.
+        account = session.rows("account")[0]
+        assert account["authz_revision"] == 5, (
+            f"account authz_revision must be exactly +1, got {account['authz_revision']}"
+        )
+
+        # The membership row's eagerly-loaded ``account`` relationship is
+        # read but no longer mutated. Asserting that relationship's
+        # ``authz_revision`` is still the pre-activation value pins the
+        # deletion — any regression that re-introduces a relative bump
+        # shows up here.
+        member = session.rows("membership")[0]
+        assert member["account"]["authz_revision"] == 4, (
+            "membership.account.authz_revision must NOT be bumped by activate_membership"
+        )
+
+
+    async def test_logout_with_unknown_token_leaves_rows_untouched(self) -> None:
+        """``RefreshTokenRow.token_hash == refresh_hash`` (line 540) — the
+        idempotent no-op branch must not revoke an unrelated row."""
+        from ksma.identity.application import logout  # noqa: PLC0415
+
+        session = _IdentitySession()
+        _seed_refresh_token(session, token_hash="some-other-hash", revoked_at=None)
+        await logout(session, refresh_raw="unknown-raw-token")
+        assert session.rows("refresh_token")[0]["revoked_at"] is None, (
+            "logout revoked a token that was never presented"
+        )
+
+    async def test_start_recovery_unknown_subject_issues_no_row(self) -> None:
+        """``AccountRow.auth_subject == auth_subject`` (line 561) — the
+        non-enumerating branch returns a fake token and persists nothing."""
+        from ksma.identity.application import start_recovery  # noqa: PLC0415
+
+        session = _IdentitySession()
+        _seed_account(session, auth_subject="seeded-subject")
+        token = await start_recovery(session, auth_subject="other-subject")
+        assert token == "invalid-account"
+        assert session.rows("recovery_token") == []
+
+    async def test_start_recovery_wrong_namespace_issues_no_row(self) -> None:
+        """``AccountRow.auth_namespace == auth_namespace`` (line 560)."""
+        from ksma.identity.application import start_recovery  # noqa: PLC0415
+
+        session = _IdentitySession()
+        _seed_account(session, auth_subject="seeded-subject", auth_namespace="default")
+        token = await start_recovery(
+            session, auth_subject="seeded-subject", auth_namespace="other-namespace"
+        )
+        assert token == "invalid-account"
+        assert session.rows("recovery_token") == []
+
+
+class TestActivateTenantEquality:
+    """``TenantRow.id == tenant_id`` (line 102) — matched by equality."""
+
+    async def test_matching_tenant_id_activates_the_row(self) -> None:
+        """Kills the ``== -> !=`` mutant on line 102.
+
+        The row is seeded with exactly the id the caller passes, so the lookup
+        only finds it under ``==``; under ``!=`` the WHERE excludes it and the
+        call raises ``ValidationError("Tenant not found")``.
+        """
+        from ksma.identity.application import activate_tenant  # noqa: PLC0415
+
+        session = _IdentitySession()
+        tenant_id = uuid4()
+        session.seed(
+            "tenant",
+            {
+                "id": tenant_id,
+                "display_name": "Yayasan Vue",
+                "service_status": "setup",
+                "default_timezone": "Asia/Jakarta",
+                "activated_at": None,
+                "updated_by": None,
+            },
+        )
+
+        tenant = await activate_tenant(session, tenant_id=tenant_id, actor_label="ops")
+
+        assert str(tenant.id) == str(tenant_id)
+        assert tenant.service_status.value == "active", (
+            f"tenant not activated: {tenant.service_status!r}"
+        )
+        assert tenant.activated_at is not None
+        assert tenant.updated_by == "ops"
+
+    async def test_unknown_tenant_id_does_not_activate_a_sibling(self) -> None:
+        """A different tenant id must not touch the seeded row."""
+        from ksma.identity.application import activate_tenant  # noqa: PLC0415
+
+        session = _IdentitySession()
+        session.seed(
+            "tenant",
+            {
+                "id": uuid4(),
+                "display_name": "Other",
+                "service_status": "setup",
+                "default_timezone": "Asia/Jakarta",
+                "activated_at": None,
+                "updated_by": None,
+            },
+        )
+        with pytest.raises(ValidationError):
+            await activate_tenant(session, tenant_id=uuid4())
+        assert session.rows("tenant")[0]["service_status"] == "setup"

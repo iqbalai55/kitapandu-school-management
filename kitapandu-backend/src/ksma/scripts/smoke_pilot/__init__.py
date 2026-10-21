@@ -265,6 +265,8 @@ async def _login(
     if len(parts) >= 2:
         raw = parts[1]
         # base64url with possible missing padding.
+        # pragma: no mutate  # equivalent: `delete -`; proved by tests/unit/test_smoke_pilot.py:1961-1985
+        # equivalent mutant (wave: ticket #19) - non-strict base64 decode: both paddings agree.
         padded = raw + "=" * (-len(raw) % 4)
         decoded = base64.urlsafe_b64decode(padded.encode())
         try:

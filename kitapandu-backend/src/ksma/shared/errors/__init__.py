@@ -36,12 +36,20 @@ class DomainError(Exception):
         field_path: str | None = None,
         details: dict[str, Any] | None = None,
         correlation_id: UUID | None = None,
+        code: str | None = None,
     ) -> None:
         super().__init__(message)
         self.message = message
         self.field_path = field_path
         self.details = details or {}
         self.correlation_id = correlation_id or uuid4()
+        # T30 D1: per-instance override of the machine-readable code
+        # is set as an instance attribute and shadows the class-level
+        # default. ``code`` is a non-data descriptor (plain string on
+        # the class body), so ``self.code = code`` correctly overrides
+        # it without the property dance.
+        if code is not None:
+            self.code = code
 
     def to_payload(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -51,7 +59,12 @@ class DomainError(Exception):
         }
         if self.field_path:
             payload["field_path"] = self.field_path
-        if self.details:
+        # T30 D4: ``details`` is omitted for ``ACCESS_DENIED`` per NFR08 —
+        # clients that are by definition not authorised must not receive
+        # an object payload. The guard lives here (rather than only on the
+        # subclass) so any future code that inherits from
+        # ``AccessDeniedError`` inherits the same defence.
+        if self.details and self.code != "ACCESS_DENIED":
             payload["details"] = self.details
         return payload
 
