@@ -30,10 +30,20 @@ BEARER_PREFIX: Final[str] = "Bearer "
 
 @dataclass(frozen=True, slots=True)
 class AdminTokenPolicy:
-    """Snapshot of the admin-token config used by the middleware."""
+    """Snapshot of the admin-token config used by the middleware.
+
+    T30 D3: the previous two-field design (token + is_configured) had a
+    latent invariant gap — nothing prevented a caller constructing
+    ``AdminTokenPolicy(is_configured=True, token=None)`` and ending up
+    with a silent bypass. ``is_configured`` is now derived as
+    ``token is not None``; the inconsistent state is unrepresentable.
+    """
 
     token: str | None  # None = dev/no-token mode
-    is_configured: bool  # True iff a non-empty token is set
+
+    @property
+    def is_configured(self) -> bool:
+        return self.token is not None
 
 
 def load_policy(token: str | None) -> AdminTokenPolicy:
@@ -47,8 +57,8 @@ def load_policy(token: str | None) -> AdminTokenPolicy:
             "KITAPANDU_ADMIN_TOKEN is unset — /api/v1/admin/* is OPEN. "
             "Set the env var in any non-dev environment."
         )
-        return AdminTokenPolicy(token=None, is_configured=False)
-    return AdminTokenPolicy(token=token, is_configured=True)
+        return AdminTokenPolicy(token=None)
+    return AdminTokenPolicy(token=token)
 
 
 def is_authorized(policy: AdminTokenPolicy, authorization_header: str | None) -> bool:
