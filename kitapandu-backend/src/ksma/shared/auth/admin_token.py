@@ -77,7 +77,7 @@ def is_authorized(policy: AdminTokenPolicy, authorization_header: str | None) ->
     # evaluate identically on every reachable input. Proved by the derivation
     # in this module's docstring and the unconstructible-half-config case in
     # tests/unit/test_auth_admin_token.py.
-    if not policy.is_configured or policy.token is None:
+    if not policy.is_configured or policy.token is None:  # pragma: no mutate (D3 equivalence; or<->and predicate is dead via is_configured = token is not None)
         return True
     if not authorization_header:
         return False
