@@ -1281,15 +1281,22 @@ class TestTypedResultFields:
 
 
 class TestActivateMembershipAuthzBump:
-    """Pin the in-row ``m.account.authz_revision`` bump on line 258."""
+    """Pin ``activate_membership``'s exact ``authz_revision`` semantics.
 
-    async def test_in_row_account_revision_is_bumped(self) -> None:
-        """Kills the ``1 -> 0`` mutant on the *taken* branch of line 258.
+    T30 D2: previously the membership's eagerly-loaded ``account``
+    relationship and the separately re-queried account row were *both*
+    bumped, so ``authz_revision`` incremented by 2 on every activation
+    (which is what masked the double-bug behind the dead ``hasattr``
+    ternary). The relative relationship-bump line is gone; only the
+    re-query remains, so this class pins the corrected ``+= 1`` invariant.
+    """
 
-        ``activate_membership`` bumps the membership's eagerly-loaded
-        ``account`` relationship **and** re-queries the account row. The
-        existing test only inspected the re-queried row (line 263), so the
-        ``+= 0`` on the relationship bump went unnoticed.
+    async def test_account_revision_is_bumped_by_exactly_one(self) -> None:
+        """Kills the ``+= 2`` (re-bumping) mutant on the re-query path
+        (:263). Pre-D2, ``activate_membership`` bumped
+        ``authz_revision`` by 2 — once on the eagerly-loaded relationship,
+        once on the re-queried row — which silently invalidated every
+        already-issued JWT twice over. After D2 the bump is exactly 1.
         """
         from ksma.identity.application import activate_membership  # noqa: PLC0415
 
@@ -1299,41 +1306,21 @@ class TestActivateMembershipAuthzBump:
 
         await activate_membership(session, membership_id=mid)
 
-        member = session.rows("membership")[0]
-        assert member["account"]["authz_revision"] == 5, (
-            f"relationship authz_revision not bumped: {member['account']['authz_revision']!r}"
+        # The re-queried account row is the durable bump.
+        account = session.rows("account")[0]
+        assert account["authz_revision"] == 5, (
+            f"account authz_revision must be exactly +1, got {account['authz_revision']}"
         )
-        # The separately re-queried row is bumped too (line 263).
-        assert session.rows("account")[0]["authz_revision"] == 5
 
-    async def test_else_branch_of_the_ternary_is_dead_code(self) -> None:
-        """Documents why the second ``1 -> 0`` mutant on line 258 is
-        *provably equivalent* (spec #16 → ticket #19 ``Test*Equivalence`` rule).
-
-        ``m.account.authz_revision += 1 if hasattr(m, "account") else 1``
-        compiles to ``m.account`` / ``m.account.authz_revision`` loads that
-        happen **before** the right-hand side is evaluated. Therefore:
-
-        * ``hasattr(m, "account")`` is ``True`` on every path that reaches the
-          ternary — a ``False`` would have already raised ``AttributeError``.
-        * With ``True``, the ``else`` literal is never evaluated, so flipping
-          it changes nothing.
-
-        Both mutants are observationally identical for every reachable input,
-        so no test can kill the second one. This test pins the *reachable*
-        behaviour the dead branch stands for.
-        """
-        from ksma.identity.application import activate_membership  # noqa: PLC0415
-
-        session = _IdentitySession()
-        aid = _seed_account(session, authz_revision=0)
-        mid = _seed_membership(session, account_id=aid, authz_revision=0)
-        revision_before = session.rows("membership")[0]["account"]["authz_revision"]
-
-        await activate_membership(session, membership_id=mid)
-
-        member_after = session.rows("membership")[0]
-        assert member_after["account"]["authz_revision"] == revision_before + 1
+        # The membership row's eagerly-loaded ``account`` relationship is
+        # read but no longer mutated. Asserting that relationship's
+        # ``authz_revision`` is still the pre-activation value pins the
+        # deletion — any regression that re-introduces a relative bump
+        # shows up here.
+        member = session.rows("membership")[0]
+        assert member["account"]["authz_revision"] == 4, (
+            "membership.account.authz_revision must NOT be bumped by activate_membership"
+        )
 
 
     async def test_logout_with_unknown_token_leaves_rows_untouched(self) -> None:

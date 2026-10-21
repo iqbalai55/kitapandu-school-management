@@ -255,8 +255,13 @@ async def activate_membership(
         raise ValidationError("Membership not found")
     m.status = MembershipStatus.ACTIVE
     m.updated_by = actor_label
-    m.account.authz_revision += 1 if hasattr(m, "account") else 1
-    # Bump the account's authz_revision too (separate transaction so we re-query).
+    # T30 D2: ``m.account.authz_revision += 1`` was previously here — it
+    # double-bumped the same row that the re-query below bumps, and its
+    # ``hasattr(m, "account")`` ternary was always true because CPython
+    # loads ``m.account`` before evaluating the RHS (the ``else 1`` branch
+    # was equivalent and never reached). Removing the line is the correct
+    # fix; the re-query below is the durable, transactionally-correct
+    # bump.
     a = (
         await session.execute(select(AccountRow).where(AccountRow.id == m.account_id))
     ).scalar_one()
