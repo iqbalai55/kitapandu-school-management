@@ -1,5 +1,5 @@
-"""Unit tests for ``ksma.assessment.application`` — kill the 22 surviving
-mutants in this module (issue #45, P5.2.9).
+"""Unit tests for ``ksma.assessment.application`` — kill the surviving
+mutants in this module (issues #24 / #45, P5.2.9).
 
 Seam
 ----
@@ -11,6 +11,9 @@ cases. Each test class targets one function's mutant operator sites:
                               V10 scale range (lines 152/157),
                               V10 result_state default + branch (161/162).
 - ``TestSetResultScope``    — V11 indicator-rubric scope (line 134).
+- ``TestSetResultCategorical`` — V10 categorical scale validation (line 157).
+- ``TestSetResultResultState`` — V10 result_state ASSESSED default and
+                              explicit-override branches (161/162).
 - ``TestCreateAssessment``  — ``assessment_date or clock().today()`` line
                               102; new assessment's status DRAFT.
 - ``TestSubmitAssessment``  — required-indicator gate line 205; status
@@ -18,6 +21,9 @@ cases. Each test class targets one function's mutant operator sites:
 - ``TestPostReviewAssessment`` — SUBMITTED→REVIEWED + lifecycle guard.
 - ``TestSupersedeAssessment`` — ``new_rubric_version_id or old``
                               fallback (line 253).
+- ``TestDecideCompletion``  — BR09 evidence_refs gate (lines 427/431).
+- ``TestRevokeReport``      — ``not reason`` guard (line 391).
+- ``TestRevokeCertificate`` — ``not reason`` guard (line 547).
 
 Persistence is ``FakeAsyncSession`` (outbox INSERT path) plus
 ``AsyncMock`` for the three repositories the use case consumes. No
@@ -33,7 +39,13 @@ import pytest
 
 from ksma.assessment.application import (
     create_assessment,
+    decide_completion,
+    issue_certificate,
+    publish_report,
+    replace_certificate,
     review_assessment,
+    revoke_certificate,
+    revoke_report,
     set_result,
     submit_assessment,
     supersede_assessment,
@@ -50,6 +62,7 @@ from ksma.program.domain import (
     RubricVersionStatus,
     Scale,
 )
+from ksma.reporting.domain import CertificateStatus, CompletionOutcome, ReportStatus
 from ksma.shared.errors import StateConflictError, ValidationError
 from ksma.shared.events import bus
 from ksma.shared.rbac import RoleCode
@@ -671,3 +684,490 @@ class TestSupersedeAssessment:
                 new_rubric_version_id=new_rubric_id,
             )
         assert new.rubric_version_id == new_rubric_id
+
+
+# ===========================================================================
+# set_result — V10 categorical scale validation (line 157)
+# ===========================================================================
+
+
+class TestSetResultCategorical:
+    """``set_result`` — V10 categorical ``category_code`` validation.
+
+    Mirrors the ``TestSetResult`` numeric pair: one test pins the
+    rejection path and the other pins the accepted-low-boundary path.
+    T18/T22 lesson learnt: one side leaves 6+ survivors alive.
+
+    Kills both surviving mutations on line 157:
+    - ``and -> or`` — mutated code rejects valid codes too.
+    - ``delete not`` — mutated code accepts invalid codes.
+    """
+
+    async def test_categorical_invalid_code_rejected(self) -> None:
+        """``category_code='ZZ'`` is not in ``['A','B','C']`` → ``ValidationError``.
+
+        Kills ``delete not`` on line 157: mutated ``... and
+        indicator.scale.validate_value(...)`` lets ``validate_value
+        returning False`` through, so the rejection is skipped.
+        """
+        session = FakeAsyncSession()
+        tenant_id = uuid4()
+        rubric_version_id = uuid4()
+        assessment_id = uuid4()
+        indicator_id = uuid4()
+        ctx = _ctx(tenant_id=tenant_id)
+
+        arepo = AsyncMock()
+        arepo.get.return_value = _assessment(
+            assessment_id, tenant_id, rubric_version_id=rubric_version_id
+        )
+        rrepo = AsyncMock()
+        rrepo.list_indicators.return_value = [
+            _indicator(
+                indicator_id,
+                rubric_version_id=rubric_version_id,
+                value_kind=IndicatorValueKind.CATEGORICAL,
+                scale=Scale(categories=["A", "B", "C"]),
+            )
+        ]
+        result_repo = AsyncMock()
+        with (
+            patch(
+                "ksma.assessment.application.AssessmentRepository",
+                return_value=arepo,
+            ),
+            patch(
+                "ksma.assessment.application.RubricRepository", return_value=rrepo
+            ),
+            patch(
+                "ksma.assessment.application.AssessmentResultRepository",
+                return_value=result_repo,
+            ),
+            pytest.raises(ValidationError) as exc_info,
+        ):
+            await set_result(
+                session,
+                ctx,
+                assessment_id=assessment_id,
+                indicator_id=indicator_id,
+                category_code="ZZ",
+            )
+        assert "categories" in str(exc_info.value).lower()
+        assert result_repo.upsert.await_count == 0
+
+    async def test_categorical_first_allowed_code_is_accepted(self) -> None:
+        """The lowest-allowed ``category_code='A'`` is accepted (lower-boundary).
+
+        Kills ``and -> or`` on line 157: mutated ``... or
+        indicator.scale.validate_value(...)`` rejects every provided
+        value because ``category_code is not None`` short-circuits the
+        ``or`` to True.
+        """
+        session = FakeAsyncSession()
+        tenant_id = uuid4()
+        rubric_version_id = uuid4()
+        assessment_id = uuid4()
+        indicator_id = uuid4()
+        ctx = _ctx(tenant_id=tenant_id)
+
+        arepo = AsyncMock()
+        arepo.get.return_value = _assessment(
+            assessment_id, tenant_id, rubric_version_id=rubric_version_id
+        )
+        rrepo = AsyncMock()
+        rrepo.list_indicators.return_value = [
+            _indicator(
+                indicator_id,
+                rubric_version_id=rubric_version_id,
+                value_kind=IndicatorValueKind.CATEGORICAL,
+                scale=Scale(categories=["A", "B", "C"]),
+            )
+        ]
+        result_repo = AsyncMock()
+        with (
+            patch(
+                "ksma.assessment.application.AssessmentRepository",
+                return_value=arepo,
+            ),
+            patch(
+                "ksma.assessment.application.RubricRepository", return_value=rrepo
+            ),
+            patch(
+                "ksma.assessment.application.AssessmentResultRepository",
+                return_value=result_repo,
+            ),
+        ):
+            result = await set_result(
+                session,
+                ctx,
+                assessment_id=assessment_id,
+                indicator_id=indicator_id,
+                category_code="A",
+            )
+        assert result.category_code == "A"
+        assert result_repo.upsert.await_count == 1
+
+
+# ===========================================================================
+# set_result — V10 result_state default + explicit override (lines 161/162)
+# ===========================================================================
+
+
+class TestSetResultResultState:
+    """``set_result`` — V10 result_state default + explicit caller override.
+
+    The conditional on line 162 picks ``ASSESSED`` iff exactly one
+    value was provided (V10: a real submission) and ``NOT_ASSESSED``
+    otherwise. The ``result_state or (...)`` on line 161 lets callers
+    override the default with their own value.
+
+    Kills the three surviving mutations on lines 161 / 162:
+    - Line 161 ``or -> and`` — explicit override is clobbered by default.
+    - Line 162 ``== -> !=`` and ``1 -> 0`` — default branch is flipped.
+    """
+
+    async def test_single_value_defaults_to_assessed(self) -> None:
+        """Passing one value yields ``ASSESSED`` (V10: real submission).
+
+        Kills ``== -> !=`` and ``1 -> 0`` on line 162: mutated
+        ``set_values != 1`` / ``set_values == 0`` evaluate to False for
+        ``set_values == 1``, so the conditional yields
+        ``ResultState.NOT_ASSESSED`` instead of ``ASSESSED``.
+        """
+        session = FakeAsyncSession()
+        tenant_id = uuid4()
+        rubric_version_id = uuid4()
+        assessment_id = uuid4()
+        indicator_id = uuid4()
+        ctx = _ctx(tenant_id=tenant_id)
+
+        arepo = AsyncMock()
+        arepo.get.return_value = _assessment(
+            assessment_id, tenant_id, rubric_version_id=rubric_version_id
+        )
+        rrepo = AsyncMock()
+        rrepo.list_indicators.return_value = [
+            _indicator(
+                indicator_id,
+                rubric_version_id=rubric_version_id,
+                value_kind=IndicatorValueKind.NUMERIC,
+                scale=Scale(min=0.0, max=100.0),
+            )
+        ]
+        result_repo = AsyncMock()
+        with (
+            patch(
+                "ksma.assessment.application.AssessmentRepository",
+                return_value=arepo,
+            ),
+            patch(
+                "ksma.assessment.application.RubricRepository", return_value=rrepo
+            ),
+            patch(
+                "ksma.assessment.application.AssessmentResultRepository",
+                return_value=result_repo,
+            ),
+        ):
+            result = await set_result(
+                session,
+                ctx,
+                assessment_id=assessment_id,
+                indicator_id=indicator_id,
+                numeric_value=42.0,
+            )
+        assert result.result_state is ResultState.ASSESSED
+
+    async def test_explicit_not_assessed_overrides_the_single_value_default(self) -> None:
+        """``result_state=NOT_ASSESSED`` with a single value stays ``NOT_ASSESSED``.
+
+        Kills ``or -> and`` on line 161: mutated ``... and (...)``
+        returns the default when the explicit override is the truthy
+        ``NOT_ASSESSED`` enum, so a caller-supplied
+        ``result_state=NOT_ASSESSED`` is silently flipped to
+        ``ASSESSED`` for ``set_values == 1``.
+        """
+        session = FakeAsyncSession()
+        tenant_id = uuid4()
+        rubric_version_id = uuid4()
+        assessment_id = uuid4()
+        indicator_id = uuid4()
+        ctx = _ctx(tenant_id=tenant_id)
+
+        arepo = AsyncMock()
+        arepo.get.return_value = _assessment(
+            assessment_id, tenant_id, rubric_version_id=rubric_version_id
+        )
+        rrepo = AsyncMock()
+        rrepo.list_indicators.return_value = [
+            _indicator(
+                indicator_id,
+                rubric_version_id=rubric_version_id,
+                value_kind=IndicatorValueKind.NUMERIC,
+                scale=Scale(min=0.0, max=100.0),
+            )
+        ]
+        result_repo = AsyncMock()
+        with (
+            patch(
+                "ksma.assessment.application.AssessmentRepository",
+                return_value=arepo,
+            ),
+            patch(
+                "ksma.assessment.application.RubricRepository", return_value=rrepo
+            ),
+            patch(
+                "ksma.assessment.application.AssessmentResultRepository",
+                return_value=result_repo,
+            ),
+        ):
+            result = await set_result(
+                session,
+                ctx,
+                assessment_id=assessment_id,
+                indicator_id=indicator_id,
+                numeric_value=42.0,
+                result_state=ResultState.NOT_ASSESSED,
+            )
+        assert result.result_state is ResultState.NOT_ASSESSED
+
+
+# ===========================================================================
+# submit_assessment — required-indicator-missing gate (line 205)
+# ===========================================================================
+
+
+class TestSubmitAssessmentRequiredGate:
+    """``submit_assessment`` — required indicator without a result is rejected.
+
+    Kills ``or -> and`` on line 205: mutated ``... and
+    by_indicator[i.id].result_state is ResultState.NOT_ASSESSED`` short-
+    circuits to False on a missing result, so the missing list stays
+    empty and the gate is bypassed.
+    """
+
+    async def test_missing_required_indicator_raises_validation_error(self) -> None:
+        """A DRAFT assessment with an unassessed required indicator is rejected.
+
+        ``required`` is set; ``list_for_assessment`` returns ``[]`` so
+        ``by_indicator.get(i.id) is None`` — the FIRST clause of the
+        original ``or``. The mutation turns the ``or`` into an ``and``;
+        the ``None and <something>`` short-circuits to False, the
+        indicator is never flagged as missing, and ``submit_assessment``
+        silently promotes the row to ``SUBMITTED``.
+        """
+        session = FakeAsyncSession()
+        tenant_id = uuid4()
+        rubric_version_id = uuid4()
+        assessment_id = uuid4()
+        indicator_id = uuid4()
+        ctx = _ctx(tenant_id=tenant_id)
+
+        arepo = AsyncMock()
+        arepo.get.return_value = _assessment(
+            assessment_id,
+            tenant_id,
+            rubric_version_id=rubric_version_id,
+            status=AssessmentStatus.DRAFT,
+        )
+        rrepo = AsyncMock()
+        rrepo.list_indicators.return_value = [
+            _indicator(
+                indicator_id,
+                rubric_version_id=rubric_version_id,
+                is_required=True,
+            )
+        ]
+        result_repo = AsyncMock()
+        result_repo.list_for_assessment.return_value = []  # no results for anyone
+        with (
+            patch(
+                "ksma.assessment.application.AssessmentRepository",
+                return_value=arepo,
+            ),
+            patch(
+                "ksma.assessment.application.RubricRepository", return_value=rrepo
+            ),
+            patch(
+                "ksma.assessment.application.AssessmentResultRepository",
+                return_value=result_repo,
+            ),
+            pytest.raises(ValidationError) as exc_info,
+        ):
+            await submit_assessment(session, ctx, assessment_id=assessment_id)
+        assert "required" in str(exc_info.value).lower()
+        # The original code MUST have stopped before touching the
+        # ``update_status`` call; the mutation lets it through.
+        assert arepo.update_status.await_count == 0
+
+
+# ===========================================================================
+# decide_completion — evidence_refs validation (lines 427, 431)
+# ===========================================================================
+
+
+class TestDecideCompletion:
+    """``decide_completion`` — BR09 evidence_refs validation (lines 427/431).
+
+    The empty-list gate (line 427) and the per-ref kind guard (line 431)
+    share a single use case. Three mutations across two lines:
+
+    - Line 427 ``delete not`` — empty list passes the gate.
+    - Line 431 ``or -> and`` — only raises when both clauses are True.
+    - Line 431 ``delete not`` — only raises when the kind clause is True.
+    """
+
+    async def test_empty_evidence_refs_rejected(self) -> None:
+        """``evidence_refs=[]`` raises ``ValidationError`` (BR09).
+
+        Kills ``delete not`` on line 427: mutated ``if evidence_refs:``
+        is False for an empty list, so the gate is bypassed and a
+        decision is recorded with no supporting evidence.
+        """
+        session = FakeAsyncSession()
+        tenant_id = uuid4()
+        ctx = _ctx(tenant_id=tenant_id)
+
+        crepo = AsyncMock()
+        with patch(
+            "ksma.assessment.application.CompletionDecisionRepository",
+            return_value=crepo,
+        ), pytest.raises(ValidationError) as exc_info:
+            await decide_completion(
+                session,
+                ctx,
+                unit_id=uuid4(),
+                enrollment_id=uuid4(),
+                outcome=CompletionOutcome.COMPLETED,
+                evidence_refs=[],
+            )
+        assert "BR09" in str(exc_info.value)
+        # No decision was inserted.
+        assert crepo.create.await_count == 0
+
+    async def test_evidence_ref_with_unknown_kind_rejected(self) -> None:
+        """A well-formed ``ref`` whose ``kind`` is not in the allowed set is rejected.
+
+        Kills ``delete not`` on line 431: mutated
+        ``if isinstance(ref, dict) or ref.get('kind') not in
+        allowed_kinds:`` short-circuits on a well-formed dict and lets
+        invalid kinds through.
+
+        Kills ``or -> and`` on line 431 indirectly via the same gate —
+        a ``dict`` with a wrong kind is the only ref shape where the
+        two mutated conditions diverge (both clauses point in the
+        same direction for the other shapes).
+        """
+        session = FakeAsyncSession()
+        tenant_id = uuid4()
+        ctx = _ctx(tenant_id=tenant_id)
+
+        crepo = AsyncMock()
+        invalid_ref = {"kind": "transcript", "id": str(uuid4())}
+        with patch(
+            "ksma.assessment.application.CompletionDecisionRepository",
+            return_value=crepo,
+        ), pytest.raises(ValidationError) as exc_info:
+            await decide_completion(
+                session,
+                ctx,
+                unit_id=uuid4(),
+                enrollment_id=uuid4(),
+                outcome=CompletionOutcome.COMPLETED,
+                evidence_refs=[invalid_ref],
+            )
+        assert "report_publication" in str(exc_info.value) or "assessment" in str(
+            exc_info.value
+        )
+        assert crepo.create.await_count == 0
+
+    async def test_non_dict_evidence_ref_rejected(self) -> None:
+        """A bare string in ``evidence_refs`` is rejected (BR09 + V11).
+
+        Kills the remaining divergence on line 431 (``or -> and``):
+        the original ``not isinstance(ref, dict) or ...`` raises
+        whether or not the second clause is true; the mutated ``and``
+        form only raises if the second clause ALSO raises. A bare
+        string never has a kind that is in the allowed set, so the
+        second clause raises ValidationError under the mutation — and
+        the test asserts the original succeeds in raising it too via
+        the first clause.
+        """
+        session = FakeAsyncSession()
+        tenant_id = uuid4()
+        ctx = _ctx(tenant_id=tenant_id)
+
+        crepo = AsyncMock()
+        with patch(
+            "ksma.assessment.application.CompletionDecisionRepository",
+            return_value=crepo,
+        ), pytest.raises(ValidationError):
+            await decide_completion(
+                session,
+                ctx,
+                unit_id=uuid4(),
+                enrollment_id=uuid4(),
+                outcome=CompletionOutcome.COMPLETED,
+                evidence_refs=["raw-string-not-a-dict"],  # type: ignore[list-item]
+            )
+        assert crepo.create.await_count == 0
+
+
+# ===========================================================================
+# revoke_report — empty-reason guard (line 391)
+# ===========================================================================
+
+
+class TestRevokeReport:
+    """``revoke_report`` — ``not reason`` guards the revocation request."""
+
+    async def test_empty_reason_rejected(self) -> None:
+        """``revoke_report(reason='')`` raises ``ValidationError``.
+
+        Kills ``delete not`` on line 391: mutated ``if reason:``
+        short-circuits on an empty string, so the gate is bypassed.
+        """
+        session = FakeAsyncSession()
+        tenant_id = uuid4()
+        ctx = _ctx(tenant_id=tenant_id)
+
+        prepo = AsyncMock()
+        with patch(
+            "ksma.assessment.application.ReportPublicationRepository",
+            return_value=prepo,
+        ), pytest.raises(ValidationError) as exc_info:
+            await revoke_report(
+                session,
+                ctx,
+                publication_id=uuid4(),
+                reason="",
+            )
+        assert "reason" in str(exc_info.value).lower()
+        assert prepo.update_status.await_count == 0
+
+
+# ===========================================================================
+# revoke_certificate — empty-reason guard (line 547)
+# ===========================================================================
+
+
+class TestRevokeCertificate:
+    """``revoke_certificate`` — ``not reason`` guards the revocation request."""
+
+    async def test_empty_reason_rejected(self) -> None:
+        """``revoke_certificate(reason='')`` raises ``ValidationError``.
+
+        Kills ``delete not`` on line 547: mutated ``if reason:``
+        short-circuits on an empty string, so the gate is bypassed.
+        """
+        session = FakeAsyncSession()
+        tenant_id = uuid4()
+        ctx = _ctx(tenant_id=tenant_id)
+
+        with pytest.raises(ValidationError) as exc_info:
+            await revoke_certificate(
+                session,
+                ctx,
+                certificate_id=uuid4(),
+                reason="",
+            )
+        assert "reason" in str(exc_info.value).lower()
