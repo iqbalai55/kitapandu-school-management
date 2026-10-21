@@ -750,13 +750,12 @@ def _integrity_error(message: str) -> IntegrityError:
     return IntegrityError("INSERT", {}, Exception(message))
 
 
-# NOTE (spec #16, T20): ``CapacityExceededError(..., code=...)`` at
-# ``batch/application/__init__.py:362`` passes a keyword the ``DomainError``
-# base constructor does not accept, so the translation branch *itself* raises
-# ``TypeError`` instead of producing the intended ``ENROLLMENT_OVERLAP``
-# ``CapacityExceededError``. That is a production defect, not a test defect —
-# ticket #20 may not touch ``src/``. The branch-selection assertions below
-# still pin the ``or`` at :359: they prove the translation branch was *taken*
+# T30 D1 fix in place: ``DomainError.__init__`` now accepts the optional
+# ``code=`` keyword argument, so ``CapacityExceededError(..., code=...)`` at
+# ``batch/application/__init__.py:362`` reaches the caller as the intended
+# ``CapacityExceededError(code="ENROLLMENT_OVERLAP")`` rather than raising
+# ``TypeError``. Previously this file documented the bug with a NOTE; now it
+# is the asserted correct behaviour.
 # (TypeError escapes) rather than the raw ``IntegrityError`` being re-raised.
 _OVERLAP_MARKER_MESSAGES = [
     pytest.param(
@@ -775,21 +774,26 @@ _OVERLAP_MARKER_MESSAGES = [
 async def test_place_enrollment_overlap_marker_alone_takes_translation_branch(
     ctx: Any, session: _FakeSession, message: str
 ) -> None:
-    """V06/R07: *either* overlap marker alone must select the ``or`` at :359.
+    """V06/R07: *either* overlap marker alone must select the ``or`` at :359,
+    and the translated exception must reach the caller as a real
+    ``CapacityExceededError`` (T30 D1 — ``DomainError.__init__`` now
+    accepts ``code=`` so ``code="ENROLLMENT_OVERLAP"`` does not raise
+    ``TypeError``).
 
-    With the mutant (``or -> and``) neither single-marker message satisfies the
-    guard, the raw ``IntegrityError`` is re-raised, and this test fails.
+    With the ``or -> and`` mutant at :359 neither single-marker message
+    satisfies the guard, the raw ``IntegrityError`` is re-raised, and
+    this test fails — pinning both branches.
     """
     batch_id, _b = _open_batch(capacity=5)
     _FakeBatchRepository.active_counts[batch_id] = 0
     _FakeEnrollmentRepository.create_error = _integrity_error(message)
 
-    with pytest.raises(TypeError) as excinfo:
+    with pytest.raises(CapacityExceededError) as excinfo:
         await app.place_enrollment(
             session, ctx, participant_id=uuid4(), batch_id=batch_id, effective_from=NOW
         )
 
-    assert "code" in str(excinfo.value)
+    assert excinfo.value.code == "ENROLLMENT_OVERLAP"
     assert _FakeBatchRepository.status_writes == []
 
 
