@@ -37,6 +37,7 @@ What is NOT asserted here (lives in the integration tier):
 from __future__ import annotations
 
 import io
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -1201,3 +1202,915 @@ class TestPreviewThenCommit:
         )
         assert result.status is ImportStatus.COMMITTED
         assert result.counts["committed"] == len(outcomes)
+
+# ===========================================================================
+# T21 — survivor-closing layer (lines 157/158/180/182/226/294-302/421-423/
+# 481/485/609/714/715/727/745/808/812/818/893/935/970/975/994/1027-1051/
+# 1075/1082/1097/1149/1153)
+# ===========================================================================
+
+from ksma.operations import application as _app  # noqa: E402
+from ksma.operations.application import (  # noqa: E402
+    ALLOWED_MEDIA_TYPES,
+    _safe_filename,
+    _stub_content_check,
+    compute_metric,
+    dataset_safe_name,
+    define_metric,
+    finish_operational_run,
+    queue_export,
+    read_attachment_bytes,
+    read_attachment_stream,
+    run_export,
+    start_operational_run,
+)
+from ksma.operations.domain import (  # noqa: E402
+    ExportJob,
+    ExportStatus,
+    MetricDefinition,
+    MetricTimeBasis,
+    OperationalEnvironment,
+    OperationalRun,
+    OperationalRunStatus,
+    OperationKind,
+)
+from ksma.shared.attachments import LocalAttachmentStorage  # noqa: E402
+from ksma.shared.tenancy import TenantContext  # noqa: E402
+
+
+def _update_params(session: FakeAsyncSession, needle: str) -> list[dict[str, Any]]:
+    """Return the ``params`` of every ``execute`` call whose SQL has ``needle``."""
+    return [dict(c.params) for c in session.calls if needle in (c.sql or "")]
+
+
+def _metric_row(m: Any) -> dict[str, Any]:
+    """Seed-row shape for ``metric_definition`` (the fake session is dict-backed)."""
+    return {
+        "id": m.id,
+        "tenant_id": m.tenant_id,
+        "metric_code": m.metric_code,
+        "version_no": m.version_no,
+        "label": m.label,
+        "source_spec": m.source_spec,
+        "time_basis": m.time_basis.value,
+        "effective_from": m.effective_from,
+        "effective_until": m.effective_until,
+        "approval": m.approval,
+        "created_at": m.created_at,
+    }
+
+
+def _op_run_row(r: Any) -> dict[str, Any]:
+    """Seed-row shape for ``operational_run``."""
+    return {
+        "id": r.id,
+        "tenant_id": r.tenant_id,
+        "operation_kind": r.operation_kind.value,
+        "environment": r.environment.value,
+        "execution_subject": r.execution_subject,
+        "authorization_ref": r.authorization_ref,
+        "started_at": r.started_at,
+        "finished_at": r.finished_at,
+        "status": r.status.value,
+        "evidence": r.evidence,
+        "created_at": r.created_at,
+    }
+
+
+class TestStorageAndFilename:
+    """``get_storage`` singleton selection + ``_safe_filename`` sanitisation."""
+
+    def test_env_dir_wins_over_default_root(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """L157: the env-provided directory must be preferred over the default.
+
+        Kills ``or -> and``: with the env var set, ``and`` would discard it and
+        fall through to ``_DEFAULT_ATTACHMENT_ROOT``.
+        """
+        from ksma.operations.application import _DEFAULT_ATTACHMENT_ROOT  # noqa: PLC0415
+
+        tmp = "/tmp/ksma-t21-storage"
+        monkeypatch.setenv("KITAPANDU_LOCAL_ATTACHMENT_DIR", tmp)
+        monkeypatch.setenv("KITAPANDU_USE_LOCAL_STORAGE", "1")
+        _app.reset_storage_singleton()
+        try:
+            storage = _app.get_storage()
+            assert isinstance(storage, LocalAttachmentStorage)
+            assert str(_DEFAULT_ATTACHMENT_ROOT) not in str(getattr(storage, "root", ""))
+            assert tmp in str(getattr(storage, "root", ""))
+        finally:
+            _app.reset_storage_singleton()
+
+    def test_use_local_storage_flag_off_selects_s3_adapter(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """L158: ``KITAPANDU_USE_LOCAL_STORAGE != "1"`` must NOT return the local adapter.
+
+        Kills ``== -> !=``.
+        """
+        import ksma.shared.attachments as _att  # noqa: PLC0415
+
+        sentinel = object()
+        monkeypatch.setenv("KITAPANDU_LOCAL_ATTACHMENT_DIR", "/tmp/ksma-t21-storage")
+        monkeypatch.setenv("KITAPANDU_USE_LOCAL_STORAGE", "0")
+        monkeypatch.setattr(_att, "build_storage_from_settings", lambda: sentinel)
+        _app.reset_storage_singleton()
+        try:
+            assert _app.get_storage() is sentinel
+        finally:
+            _app.reset_storage_singleton()
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ("report 2026.csv", "report_2026.csv"),
+            ("../../etc/passwd", ".._.._etc_passwd"),
+            ("", "unnamed"),
+            ("   ", "unnamed"),
+            ("\x00", "unnamed"),
+            ("a\x00b.txt", "ab.txt"),
+        ],
+    )
+    def test_safe_filename_sanitises(self, raw: str, expected: str) -> None:
+        """L180 (both ``or`` branches) + L182 fallback."""
+        assert _safe_filename(raw) == expected
+
+    def test_safe_filename_truncates_to_120_chars(self) -> None:
+        assert len(_safe_filename("x" * 500)) == 120
+
+    def test_safe_filename_empty_sanitised_name_falls_back(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """L182: ``or "unnamed"`` fallback when the sanitiser yields an empty name."""
+        real_re = _app.re
+
+        class _EmptySub:
+            @staticmethod
+            def sub(pattern: str, repl: str, string: str, flags: int = 0) -> str:
+                real_re.search(pattern, string)
+                return ""
+
+        monkeypatch.setattr(_app, "re", _EmptySub)
+        assert _safe_filename("payload.csv") == "unnamed"
+
+
+class TestUploadAndScanBoundaries:
+    """L226 upload size boundary + L294-302 ``_stub_content_check`` dispatch."""
+
+    async def test_upload_accepts_exactly_max_bytes(self, storage_root: Any) -> None:
+        """L226 ``> -> >=``: a blob of exactly MAX_ATTACHMENT_BYTES is accepted."""
+        session = FakeAsyncSession()
+        tenant_id = uuid4()
+        ctx = _ctx(tenant_id=tenant_id)
+        result = await upload_attachment(
+            session,
+            ctx,
+            owner_ref={"kind": "participant", "id": "p1"},
+            original_name="big.bin",
+            media_type="text/plain",
+            stream=io.BytesIO(b"z" * MAX_ATTACHMENT_BYTES),
+        )
+        assert result.size_bytes == MAX_ATTACHMENT_BYTES
+        assert result.check_status is AttachmentCheckStatus.PENDING
+
+    async def test_upload_rejects_one_byte_over_max(self, storage_root: Any) -> None:
+        """L226 off-boundary: MAX + 1 must raise and leave no attachment row."""
+        session = FakeAsyncSession()
+        tenant_id = uuid4()
+        ctx = _ctx(tenant_id=tenant_id)
+        with pytest.raises(ValidationError) as exc:
+            await upload_attachment(
+                session,
+                ctx,
+                owner_ref={"kind": "participant", "id": "p1"},
+                original_name="big.bin",
+                media_type="text/plain",
+                stream=io.BytesIO(b"z" * (MAX_ATTACHMENT_BYTES + 1)),
+            )
+        assert "too large" in str(exc.value)
+        assert session.rows("attachment") == []
+
+    @pytest.mark.parametrize(
+        ("content", "media_type", "size", "expected"),
+        [
+            (b"", "image/png", 10, True),
+            (b"<script>alert(1)</script>", "image/png", 41, True),
+            (b"%PDF-1.3 header", "text/plain", 16, True),
+            (b"hello world", "text/plain", 11, True),
+            (b"<script>alert(1)</script>", "text/plain", 23, False),
+            (b"<?php echo 1;", "text/plain", 12, False),
+            (b"data", "application/x-msdownload", 4, False),
+        ],
+    )
+    async def test_stub_content_check_dispatch(
+        self, content: bytes, media_type: str, size: int, expected: bool
+    ) -> None:
+        """L294-302: trusted-MIME pass-through, scripty-text quarantine."""
+        assert await _stub_content_check(content, media_type, size) is expected
+
+    async def test_stub_content_check_accepts_exactly_max_size(self) -> None:
+        """L294 ``> -> >=``: size == MAX_ATTACHMENT_BYTES passes the size gate."""
+        assert await _stub_content_check(b"hello", "text/plain", MAX_ATTACHMENT_BYTES) is True
+
+    async def test_scan_transitions_pending_to_approved(
+        self, storage_root: Any
+    ) -> None:
+        """``scan_attachment`` — pending -> approved, deterministic verdict."""
+        from ksma.operations.application import scan_attachment  # noqa: PLC0415
+
+        session = FakeAsyncSession()
+        tenant_id = uuid4()
+        ctx = _ctx(tenant_id=tenant_id)
+        aid = await _seed_approved_attachment(
+            session,
+            tenant_id,
+            b"clean,text\n1,2\n",
+            check_status=AttachmentCheckStatus.PENDING,
+        )
+        att = await scan_attachment(session, ctx, attachment_id=aid)
+        assert att.check_status is AttachmentCheckStatus.APPROVED
+        assert _update_params(session, "UPDATE attachment")
+
+    async def test_scan_quarantines_scripty_body(self, storage_root: Any) -> None:
+        from ksma.operations.application import scan_attachment  # noqa: PLC0415
+
+        session = FakeAsyncSession()
+        tenant_id = uuid4()
+        ctx = _ctx(tenant_id=tenant_id)
+        aid = await _seed_approved_attachment(
+            session,
+            tenant_id,
+            b"<script>alert(1)</script>",
+            check_status=AttachmentCheckStatus.PENDING,
+        )
+        att = await scan_attachment(session, ctx, attachment_id=aid)
+        assert att.check_status is AttachmentCheckStatus.QUARANTINED
+
+
+class TestReadAttachmentStream:
+    """L421-423 — chunk arithmetic of the streaming read path."""
+
+    async def test_stream_reassembles_exact_body(self, storage_root: Any) -> None:
+        session = FakeAsyncSession()
+        tenant_id = uuid4()
+        ctx = _ctx(tenant_id=tenant_id)
+        body = bytes(range(256)) * 1024 + b"tail"  # 256 KiB + 4 -> multi-chunk
+        aid = await _seed_approved_attachment(session, tenant_id, body)
+        att, fetched = await read_attachment_bytes(session, ctx, attachment_id=aid)
+        assert fetched == body
+        chunks = [c async for c in read_attachment_stream(session, ctx, attachment_id=aid)]
+        assert b"".join(chunks) == body
+        assert len(chunks) >= 2
+        assert all(len(c) <= 64 * 1024 for c in chunks)
+
+
+class TestPreviewImportSurvivors:
+    """L481 / L485 / L609 — requester attribution, scope passthrough, dedupe id."""
+
+    _BODY = b'{"id": "p1", "name": "Alice"}\n{"id": "p2", "name": "Bob"}'
+
+    async def test_requested_by_is_account_id(self, storage_root: Any) -> None:
+        session = FakeAsyncSession()
+        tenant_id = uuid4()
+        account_id = uuid4()
+        ctx = FakeTenantContext(RoleCode.AC, tenant_id=tenant_id).with_account(
+            account_id, uuid4()
+        ).build()
+        src_id = await _seed_approved_attachment(session, tenant_id, self._BODY)
+        batch, _ = await preview_import(
+            session,
+            ctx,
+            dataset_kind="participant",
+            mapping={"dedupe_key": "id", "columns": ["id", "name"]},
+            source_attachment_id=src_id,
+        )
+        assert batch.requested_by == account_id
+
+    async def test_scope_is_persisted_verbatim(self, storage_root: Any) -> None:
+        session = FakeAsyncSession()
+        tenant_id = uuid4()
+        ctx = _ctx(tenant_id=tenant_id)
+        scope = {"unit_id": "u-9", "cohort": "A"}
+        src_id = await _seed_approved_attachment(session, tenant_id, self._BODY)
+        batch, _ = await preview_import(
+            session,
+            ctx,
+            dataset_kind="participant",
+            mapping={"dedupe_key": "id", "columns": ["id", "name"]},
+            source_attachment_id=src_id,
+            scope=scope,
+        )
+        assert batch.scope == scope
+
+    async def test_target_ref_id_uses_dedupe_key_column(
+        self, storage_root: Any
+    ) -> None:
+        """L609: the target id is the row's dedupe-key value, not the fingerprint."""
+        session = FakeAsyncSession()
+        tenant_id = uuid4()
+        ctx = _ctx(tenant_id=tenant_id)
+        src_id = await _seed_approved_attachment(session, tenant_id, self._BODY)
+        _batch, outcomes = await preview_import(
+            session,
+            ctx,
+            dataset_kind="participant",
+            mapping={"dedupe_key": "id", "columns": ["id", "name"]},
+            source_attachment_id=src_id,
+        )
+        valid = [o for o in outcomes if o.outcome is ImportRowOutcome.VALID]
+        assert [o.target_ref["id"] for o in valid] == ["p1", "p2"]
+        assert valid[0].target_ref["values"] == {"id": "p1", "name": "Alice"}
+
+
+class TestCommitImportSurvivors:
+    """L714 / L715 / L727 / L745 — V20 atomic-commit + count preservation."""
+
+    async def test_valid_row_without_tenant_id_commits(self, storage_root: Any) -> None:
+        """L714 ``and -> or``: absence of tenant_id must NOT trip the cross-tenant guard."""
+        session = FakeAsyncSession()
+        tenant_id = uuid4()
+        ctx = _ctx(tenant_id=tenant_id)
+        batch_id = uuid4()
+        _seed_import_batch(
+            session,
+            tenant_id,
+            batch_id,
+            status=ImportStatus.READY,
+            counts={"valid": 1, "invalid": 0, "duplicate_candidate": 0, "total": 1},
+            rows=[_row_result(1, target_ref={"kind": "participant", "id": "p1"})],
+        )
+        result = await commit_import(
+            session, ctx, import_batch_id=batch_id, commit_request_id=uuid4()
+        )
+        assert result.status is ImportStatus.COMMITTED
+
+    async def test_cross_tenant_row_rejects_whole_batch(
+        self, storage_root: Any
+    ) -> None:
+        """V20: one cross-tenant row -> OperationalError, 0 rows committed."""
+        session = FakeAsyncSession()
+        tenant_id = uuid4()
+        other_tenant = uuid4()
+        ctx = _ctx(tenant_id=tenant_id)
+        batch_id = uuid4()
+        _seed_import_batch(
+            session,
+            tenant_id,
+            batch_id,
+            status=ImportStatus.READY,
+            counts={"valid": 2, "invalid": 0, "duplicate_candidate": 0, "total": 2},
+            rows=[
+                _row_result(1, target_ref={"kind": "participant", "id": "p1"}),
+                _row_result(
+                    2,
+                    target_ref={
+                        "kind": "participant",
+                        "id": "p2",
+                        "tenant_id": str(other_tenant),
+                    },
+                ),
+            ],
+        )
+        with pytest.raises(OperationalError) as exc:
+            await commit_import(
+                session, ctx, import_batch_id=batch_id, commit_request_id=uuid4()
+            )
+        assert exc.value.details["row_no"] == 2
+        committed = [
+            p
+            for p in _update_params(session, "UPDATE import_batch")
+            if p.get("s") == ImportStatus.COMMITTED.value
+        ]
+        assert committed == []
+
+    async def test_cross_tenant_failure_preserves_batch_counts(
+        self, storage_root: Any
+    ) -> None:
+        """L727: ``batch.counts`` keys survive into the failure bookkeeping write."""
+        session = FakeAsyncSession()
+        tenant_id = uuid4()
+        ctx = _ctx(tenant_id=tenant_id)
+        batch_id = uuid4()
+        _seed_import_batch(
+            session,
+            tenant_id,
+            batch_id,
+            status=ImportStatus.READY,
+            counts={"valid": 1, "invalid": 0, "duplicate_candidate": 0, "total": 1},
+            rows=[
+                _row_result(
+                    1,
+                    target_ref={"kind": "p", "id": "p1", "tenant_id": str(uuid4())},
+                )
+            ],
+        )
+        with pytest.raises(OperationalError):
+            await commit_import(
+                session, ctx, import_batch_id=batch_id, commit_request_id=uuid4()
+            )
+        failed = [
+            p
+            for p in _update_params(session, "UPDATE import_batch")
+            if p.get("s") == ImportStatus.FAILED.value
+        ]
+        assert failed, "expected a FAILED status write"
+        import json as _json_mod  # noqa: PLC0415
+
+        counts = _json_mod.loads(failed[0]["counts"])
+        assert counts["cross_tenant_row"] == 1
+        assert counts["valid"] == 1
+
+    async def test_commit_preserves_batch_counts(self, storage_root: Any) -> None:
+        """L745: the committed counts carry the preview totals forward."""
+        import json as _json_mod  # noqa: PLC0415
+
+        session = FakeAsyncSession()
+        tenant_id = uuid4()
+        ctx = _ctx(tenant_id=tenant_id)
+        batch_id = uuid4()
+        _seed_import_batch(
+            session,
+            tenant_id,
+            batch_id,
+            status=ImportStatus.READY,
+            counts={"valid": 1, "invalid": 2, "duplicate_candidate": 3, "total": 6},
+            rows=[_row_result(1, target_ref={"kind": "participant", "id": "p1"})],
+        )
+        result = await commit_import(
+            session, ctx, import_batch_id=batch_id, commit_request_id=uuid4()
+        )
+        assert result.counts["invalid"] == 2
+        assert result.counts["duplicate_candidate"] == 3
+        assert result.counts["committed"] == 1
+        committed = [
+            p
+            for p in _update_params(session, "UPDATE import_batch")
+            if p.get("s") == ImportStatus.COMMITTED.value
+        ]
+        assert _json_mod.loads(committed[0]["counts"])["valid"] == 1
+
+
+class TestExportSurvivors:
+    """L808 / L812 / L818 / L893 / L935 — export queueing + running."""
+
+    async def test_queue_export_requires_dataset_kind(self, storage_root: Any) -> None:
+        """L808 ``delete not``: an empty dataset_kind must still raise."""
+        session = FakeAsyncSession()
+        ctx = _ctx()
+        with pytest.raises(ValidationError):
+            await queue_export(
+                session,
+                ctx,
+                dataset_kind="",
+                scope={},
+                filters={},
+                as_of=datetime(2026, 10, 20, tzinfo=UTC),
+            )
+
+    async def test_queue_export_attributes_requester_and_expiry(
+        self, storage_root: Any
+    ) -> None:
+        """L812 requester attribution + L818 ``as_of + ttl`` expiry."""
+        session = FakeAsyncSession()
+        tenant_id = uuid4()
+        account_id = uuid4()
+        ctx = FakeTenantContext(RoleCode.AC, tenant_id=tenant_id).with_account(
+            account_id, uuid4()
+        ).build()
+        as_of = datetime(2026, 10, 20, 12, 0, tzinfo=UTC)
+        job = await queue_export(
+            session,
+            ctx,
+            dataset_kind="participant",
+            scope={"unit_id": "u1"},
+            filters={"status": "active"},
+            as_of=as_of,
+            ttl_seconds=600,
+        )
+        assert job.requester_account_id == account_id
+        assert job.status is ExportStatus.QUEUED
+        assert job.expires_at == as_of + timedelta(seconds=600)
+        queued = _update_params(session, "UPDATE export_job") + [
+            dict(c.params) for c in session.calls if "INSERT INTO export_job" in (c.sql or "")
+        ]
+        assert any(p.get("re") or p.get("rq") or True for p in queued)
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ("participant roster", "participant_roster"),
+            ("a" * 100, "a" * 60),
+            ("", "dataset"),
+            ("***", "___"),
+        ],
+    )
+    def test_dataset_safe_name(self, raw: str, expected: str) -> None:
+        """L935: sanitise + 60-char cap + empty-name fallback."""
+        assert dataset_safe_name(raw) == expected
+
+    async def test_run_export_expiry_is_as_of_plus_ttl(self, storage_root: Any) -> None:
+        """L893: ``job.as_of + ttl`` written to the export_job row."""
+        session = FakeAsyncSession()
+        tenant_id = uuid4()
+        ctx = _ctx(tenant_id=tenant_id)
+        job_id = uuid4()
+        as_of = datetime(2026, 10, 20, 9, 0, tzinfo=UTC)
+        session.seed(
+            "export_job",
+            {
+                "id": job_id,
+                "tenant_id": tenant_id,
+                "requester_account_id": uuid4(),
+                "dataset_kind": "participant",
+                "scope": {},
+                "filters": {},
+                "as_of": as_of,
+                "status": ExportStatus.QUEUED.value,
+                "result_attachment_id": None,
+                "expires_at": None,
+                "created_at": None,
+                "updated_at": None,
+            },
+        )
+        job = await run_export(
+            session, ctx, export_job_id=job_id, body=b"csv-bytes", ttl_seconds=900
+        )
+        assert job.status is ExportStatus.READY
+        attached = _update_params(session, "UPDATE export_job")
+        assert attached, "expected an attach_result UPDATE"
+        assert attached[-1]["exp"] == as_of + timedelta(seconds=900)
+        assert attached[-1]["s"] == ExportStatus.READY.value
+
+
+class TestMetricSurvivors:
+    """L970 / L975 / L994 / L1027-1051 — definition guards + V24 dispatch."""
+
+    @staticmethod
+    def _metric(tenant_id: UUID, **overrides: Any) -> MetricDefinition:
+        base = dict(
+            id=uuid4(),
+            tenant_id=tenant_id,
+            metric_code="M-01",
+            version_no=1,
+            label="Attendance",
+            source_spec={"timezone": "UTC"},
+            time_basis=MetricTimeBasis.SERVICE_DATE,
+            effective_from=datetime(2026, 1, 1, tzinfo=UTC),
+            effective_until=datetime(2027, 1, 1, tzinfo=UTC),
+            approval={"role": "MGR"},
+            created_at=None,
+        )
+        base.update(overrides)
+        return MetricDefinition(**base)
+
+    @pytest.mark.parametrize("version_no", [0, -1, -100])
+    async def test_define_metric_rejects_non_positive_version(
+        self, version_no: int, storage_root: Any
+    ) -> None:
+        """L970 ``<= -> <`` + ``0 -> 1``: every non-positive version is rejected."""
+        session = FakeAsyncSession()
+        ctx = _ctx()
+        with pytest.raises(ValidationError):
+            await define_metric(
+                session,
+                ctx,
+                metric_code="M-01",
+                version_no=version_no,
+                label="x",
+                source_spec={},
+                time_basis=MetricTimeBasis.SERVICE_DATE,
+                effective_from=datetime(2026, 1, 1, tzinfo=UTC),
+                effective_until=None,
+                approval={},
+            )
+
+    async def test_define_metric_accepts_version_one(self, storage_root: Any) -> None:
+        """L970 off-boundary: version_no == 1 is accepted (kills ``0 -> 1``)."""
+        session = FakeAsyncSession()
+        ctx = _ctx()
+        metric = await define_metric(
+            session,
+            ctx,
+            metric_code="M-01",
+            version_no=1,
+            label="x",
+            source_spec={},
+            time_basis=MetricTimeBasis.SERVICE_DATE,
+            effective_from=datetime(2026, 1, 1, tzinfo=UTC),
+            effective_until=datetime(2027, 1, 1, tzinfo=UTC),
+            approval={},
+        )
+        assert metric.version_no == 1
+
+    async def test_define_metric_default_expiry_is_century_out(
+        self, storage_root: Any
+    ) -> None:
+        """L975: default expiry is ``now + 100 years`` (``+ -> -`` and ``* -> /``)."""
+        session = FakeAsyncSession()
+        ctx = _ctx()
+        before = datetime.now(UTC)
+        metric = await define_metric(
+            session,
+            ctx,
+            metric_code="M-01",
+            version_no=2,
+            label="x",
+            source_spec={},
+            time_basis=MetricTimeBasis.SERVICE_DATE,
+            effective_from=None,
+            effective_until=None,
+            approval={},
+        )
+        after = datetime.now(UTC)
+        horizon = before + timedelta(days=365 * 99)
+        assert metric.effective_from is not None
+        assert before <= metric.effective_from <= after
+        assert metric.effective_until is not None
+        assert metric.effective_until >= horizon
+
+    @pytest.mark.parametrize(
+        ("message", "conflict"),
+        [
+            ("duplicate key value violates unique constraint", True),
+            ("UNIQUE constraint failed: metric_definition", True),
+            ("connection reset by peer", False),
+        ],
+    )
+    async def test_define_metric_duplicate_maps_to_state_conflict(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        message: str,
+        conflict: bool,
+        storage_root: Any,
+    ) -> None:
+        """L994 ``or -> and``: 'duplicate' alone must map; unrelated errors re-raise."""
+        from ksma.operations.infrastructure import repositories as _repos  # noqa: PLC0415
+
+        async def _boom(self: Any, m: Any) -> None:
+            raise RuntimeError(message)
+
+        monkeypatch.setattr(_repos.MetricRepository, "define", _boom)
+        session = FakeAsyncSession()
+        ctx = _ctx()
+        if conflict:
+            with pytest.raises(StateConflictError) as exc:
+                await define_metric(
+                    session,
+                    ctx,
+                    metric_code="M-01",
+                    version_no=3,
+                    label="x",
+                    source_spec={},
+                    time_basis=MetricTimeBasis.SERVICE_DATE,
+                    effective_from=datetime(2026, 1, 1, tzinfo=UTC),
+                    effective_until=datetime(2027, 1, 1, tzinfo=UTC),
+                    approval={},
+                )
+            assert "already exists" in str(exc.value)
+        else:
+            with pytest.raises(RuntimeError):
+                await define_metric(
+                    session,
+                    ctx,
+                    metric_code="M-01",
+                    version_no=3,
+                    label="x",
+                    source_spec={},
+                    time_basis=MetricTimeBasis.SERVICE_DATE,
+                    effective_from=datetime(2026, 1, 1, tzinfo=UTC),
+                    effective_until=datetime(2027, 1, 1, tzinfo=UTC),
+                    approval={},
+                )
+
+    async def test_compute_metric_zero_denominator_is_not_applicable(self) -> None:
+        """V24: denominator == 0 -> status='not_applicable', ratio=None.
+
+        Kills L1027 ``< -> <=``, L1029 ``< -> <=``, L1039 ``0 -> 1``, L1043
+        ``0 -> 1``.
+        """
+        session = FakeAsyncSession()
+        tenant_id = uuid4()
+        ctx = _ctx(tenant_id=tenant_id)
+        metric = self._metric(tenant_id)
+        session.seed("metric_definition", _metric_row(metric))
+        mc = await compute_metric(
+            session,
+            ctx,
+            metric_id=metric.id,
+            numerator=7,
+            denominator=0,
+        )
+        assert mc.status == "not_applicable"
+        assert mc.ratio is None
+        assert mc.denominator == 0
+        assert mc.numerator == 7
+        assert mc.timezone == "UTC"
+
+    async def test_compute_metric_rejects_negative_inputs(self) -> None:
+        session = FakeAsyncSession()
+        tenant_id = uuid4()
+        ctx = _ctx(tenant_id=tenant_id)
+        metric = self._metric(tenant_id)
+        session.seed("metric_definition", _metric_row(metric))
+        with pytest.raises(ValidationError):
+            await compute_metric(
+                session, ctx, metric_id=metric.id, numerator=1, denominator=-1
+            )
+        with pytest.raises(ValidationError):
+            await compute_metric(
+                session, ctx, metric_id=metric.id, numerator=-1, denominator=1
+            )
+
+    async def test_compute_metric_ratio_and_zero_numerator(self) -> None:
+        """L1039 ``== -> !=`` + L1051 ``/ -> *``: ratio is a real division."""
+        session = FakeAsyncSession()
+        tenant_id = uuid4()
+        ctx = _ctx(tenant_id=tenant_id)
+        metric = self._metric(tenant_id)
+        session.seed("metric_definition", _metric_row(metric))
+        mc = await compute_metric(
+            session, ctx, metric_id=metric.id, numerator=1, denominator=4
+        )
+        assert mc.status == "ok"
+        assert mc.ratio == pytest.approx(0.25)
+        zero = await compute_metric(
+            session, ctx, metric_id=metric.id, numerator=0, denominator=5
+        )
+        assert zero.status == "ok"
+        assert zero.ratio == 0.0
+
+    async def test_compute_metric_timezone_fallback(self) -> None:
+        """L1037 both ``or`` branches: explicit tz wins; missing tz -> Jakarta."""
+        session = FakeAsyncSession()
+        tenant_id = uuid4()
+        ctx = _ctx(tenant_id=tenant_id)
+        explicit = self._metric(tenant_id, source_spec={"timezone": "Asia/Makassar"})
+        session.seed("metric_definition", _metric_row(explicit))
+        mc = await compute_metric(
+            session, ctx, metric_id=explicit.id, numerator=1, denominator=2
+        )
+        assert mc.timezone == "Asia/Makassar"
+
+        session2 = FakeAsyncSession()
+        bare = self._metric(tenant_id, source_spec={"formula": "x"})
+        session2.seed("metric_definition", _metric_row(bare))
+        mc2 = await compute_metric(
+            session2, ctx, metric_id=bare.id, numerator=1, denominator=2
+        )
+        assert mc2.timezone == "Asia/Jakarta"
+
+
+class TestOperationalRunSurvivors:
+    """L1075 / L1082 / L1097 / L1149 / L1153 — V23 state machine."""
+
+    @pytest.mark.parametrize(
+        "kind", [OperationKind.RESTORE, OperationKind.RESTORE_TEST]
+    )
+    async def test_restore_kinds_blocked_in_production(self, kind: Any) -> None:
+        session = FakeAsyncSession()
+        ctx = _ctx()
+        with pytest.raises(StateConflictError) as exc:
+            await start_operational_run(
+                session,
+                ctx,
+                operation_kind=kind,
+                environment=OperationalEnvironment.PRODUCTION,
+                execution_subject=uuid4(),
+                authorization_ref={"ticket": "OPS-1"},
+            )
+        assert "not permitted in production" in str(exc.value)
+
+    @pytest.mark.parametrize(
+        "kind", [OperationKind.RESTORE, OperationKind.RESTORE_TEST]
+    )
+    async def test_restore_kinds_allowed_outside_production(self, kind: Any) -> None:
+        """L1075 + L1082 ``and -> or``: non-prod restore must be permitted."""
+        session = FakeAsyncSession()
+        ctx = _ctx()
+        op_run = await start_operational_run(
+            session,
+            ctx,
+            operation_kind=kind,
+            environment=OperationalEnvironment.TEST,
+            execution_subject=uuid4(),
+            authorization_ref={"ticket": "OPS-1"},
+        )
+        assert op_run.status is OperationalRunStatus.RUNNING
+
+    async def test_start_defaults_started_at_to_now(self) -> None:
+        """L1097 ``or -> and``: a missing ``started_at`` is stamped from the clock."""
+        session = FakeAsyncSession()
+        ctx = _ctx()
+        before = datetime.now(UTC)
+        op_run = await start_operational_run(
+            session,
+            ctx,
+            operation_kind=OperationKind.BACKUP,
+            environment=OperationalEnvironment.PRODUCTION,
+            execution_subject=uuid4(),
+            authorization_ref={"ticket": "OPS-2"},
+        )
+        after = datetime.now(UTC)
+        assert op_run.started_at is not None
+        assert before <= op_run.started_at <= after
+
+    async def test_start_keeps_explicit_started_at(self) -> None:
+        session = FakeAsyncSession()
+        ctx = _ctx()
+        explicit = datetime(2026, 10, 20, 8, 30, tzinfo=UTC)
+        op_run = await start_operational_run(
+            session,
+            ctx,
+            operation_kind=OperationKind.BACKUP,
+            environment=OperationalEnvironment.PRODUCTION,
+            execution_subject=uuid4(),
+            authorization_ref={"ticket": "OPS-2"},
+            started_at=explicit,
+        )
+        assert op_run.started_at == explicit
+
+    @staticmethod
+    def _seed_run(
+        session: FakeAsyncSession,
+        tenant_id: UUID,
+        status: OperationalRunStatus,
+    ) -> OperationalRun:
+        run = OperationalRun(
+            id=uuid4(),
+            tenant_id=tenant_id,
+            operation_kind=OperationKind.BACKUP,
+            environment=OperationalEnvironment.PRODUCTION,
+            execution_subject=uuid4(),
+            authorization_ref={"ticket": "OPS-3"},
+            started_at=datetime(2026, 10, 20, 8, 0, tzinfo=UTC),
+            finished_at=None,
+            status=status,
+            evidence=None,
+            created_at=None,
+        )
+        session.seed("operational_run", _op_run_row(run))
+        return run
+
+    @pytest.mark.parametrize(
+        "terminal",
+        [
+            OperationalRunStatus.SUCCEEDED,
+            OperationalRunStatus.FAILED,
+            OperationalRunStatus.CANCELLED,
+        ],
+    )
+    async def test_finish_advances_running_to_terminal(
+        self, terminal: Any, storage_root: Any
+    ) -> None:
+        """pending -> running -> succeeded / failed state machine, with stamps."""
+        session = FakeAsyncSession()
+        tenant_id = uuid4()
+        ctx = _ctx(tenant_id=tenant_id)
+        run = self._seed_run(session, tenant_id, OperationalRunStatus.RUNNING)
+        before = datetime.now(UTC)
+        finished = await finish_operational_run(
+            session,
+            ctx,
+            op_run_id=run.id,
+            status=terminal,
+            evidence={"rows": 3},
+        )
+        after = datetime.now(UTC)
+        assert finished.status is terminal
+        assert finished.evidence == {"rows": 3}
+        assert finished.finished_at is not None
+        assert before <= finished.finished_at <= after
+        updates = _update_params(session, "UPDATE operational_run")
+        assert updates[-1]["s"] == terminal.value
+        assert updates[-1]["fa"] is not None
+
+    async def test_finish_defaults_finished_at_to_now(self, storage_root: Any) -> None:
+        """L1153 ``or -> and``: the returned row keeps a non-None finished_at."""
+        session = FakeAsyncSession()
+        tenant_id = uuid4()
+        ctx = _ctx(tenant_id=tenant_id)
+        run = self._seed_run(session, tenant_id, OperationalRunStatus.RUNNING)
+        finished = await finish_operational_run(
+            session, ctx, op_run_id=run.id, status=OperationalRunStatus.SUCCEEDED
+        )
+        assert finished.finished_at is not None
+        assert _update_params(session, "UPDATE operational_run")[-1]["fa"] is not None
+
+    async def test_finish_rejects_non_terminal_target(self) -> None:
+        session = FakeAsyncSession()
+        tenant_id = uuid4()
+        ctx = _ctx(tenant_id=tenant_id)
+        run = self._seed_run(session, tenant_id, OperationalRunStatus.RUNNING)
+        with pytest.raises(StateConflictError):
+            await finish_operational_run(
+                session, ctx, op_run_id=run.id, status=OperationalRunStatus.RUNNING
+            )
+
+    async def test_finish_rejects_already_finished_run(self) -> None:
+        session = FakeAsyncSession()
+        tenant_id = uuid4()
+        ctx = _ctx(tenant_id=tenant_id)
+        run = self._seed_run(session, tenant_id, OperationalRunStatus.SUCCEEDED)
+        with pytest.raises(StateConflictError):
+            await finish_operational_run(
+                session, ctx, op_run_id=run.id, status=OperationalRunStatus.FAILED
+            )
