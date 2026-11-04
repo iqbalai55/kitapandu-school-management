@@ -21,6 +21,8 @@ from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 from ksma.shared.errors import CapacityExceededError, StateConflictError, ValidationError
 from ksma.shared.tenancy import ActorKind, TenantContext
 
+pytestmark = pytest.mark.scenario
+
 
 # ---------------------------------------------------------------------------
 # Shared fixture — a single tenant + unit + set of demo data for every test.

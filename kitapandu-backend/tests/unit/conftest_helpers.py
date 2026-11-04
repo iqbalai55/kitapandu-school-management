@@ -7,6 +7,7 @@ into a domain-shaped assertion.
 """
 from __future__ import annotations
 
+import operator as _op_mod
 import re
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
@@ -97,7 +98,6 @@ _SET_RE = re.compile(r"\bSET\b(.*?)(?:\bWHERE\b|$)", re.IGNORECASE | re.DOTALL)
 # `<=` / `>=` round to `lt` / `gt` (the fake's `_same` is loose on numeric
 # coercion, which is a faithful approximation of Postgres semantics for our
 # use cases).
-import operator as _op_mod
 _PREDICATE_OPS: dict[str, Any] = {
     "=": _op_mod.eq,
     "!=": _op_mod.ne,

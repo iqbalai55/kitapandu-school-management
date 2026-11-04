@@ -6,6 +6,7 @@ by integration tests with testcontainers.
 """
 from __future__ import annotations
 
+import types
 from typing import ClassVar
 from uuid import UUID
 
@@ -363,7 +364,6 @@ class _RecordingSleep:
         self.calls.append(seconds)
 
     def as_module(self) -> object:
-        import types
 
         return types.SimpleNamespace(sleep=self.sleep)
 

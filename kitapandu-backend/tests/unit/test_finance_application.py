@@ -1137,7 +1137,7 @@ class TestAllocateFundsBoundaries:
     async def test_available_subtracts_reversal_and_prior_use(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """V14: available = recognized − reversal_total − sum(active).
+        """V14: available = recognized - reversal_total - sum(active).
 
         recognized=100k, reversal=30k, prior use=20k -> available == 50k, so
         a 60k request is rejected and the error carries exactly 50k.
@@ -1164,7 +1164,7 @@ class TestAllocateFundsBoundaries:
     async def test_remainder_rejection_pins_exact_remainder(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """R12: remainder = due − sum(active allocations) − invoice_credit.
+        """R12: remainder = due - sum(active allocations) - invoice_credit.
 
         due=1M, allocated=200k, credited=100k -> remainder == 700k. A 750k
         request must be rejected *and* report 700k, which pins both
@@ -1505,7 +1505,7 @@ class TestComputeInvoiceProjectionRowMath:
     async def test_effective_amount_and_remainder_subtract_credit_and_allocation(
         self,
     ) -> None:
-        """V14: effective = due − credited; remainder = effective − allocated.
+        """V14: effective = due - credited; remainder = effective - allocated.
 
         due=1M, credited=200k, allocated=100k on an already-overdue
         installment -> effective 800k, remainder 700k, all of it overdue.
@@ -1639,7 +1639,7 @@ class TestComputeInvoiceProjectionPaymentStatus:
     ) -> None:
         """``settled_zero`` / ``paid`` / ``partial`` / ``unpaid`` dispatch.
 
-        Between them the cells pin every mutant on lines 787–791: the two
+        Between them the cells pin every mutant on lines 787-791: the two
         ``== 0 -> == 1`` mutants and the ``or -> and`` mutant on 787 (via
         ``zero_invoice_with_use`` and ``zero_sum``), both ``== -> !=``
         mutants (via ``fully_allocated`` and ``overdue_only``), the
@@ -1735,11 +1735,11 @@ class TestRepositoryAllocationSums:
         "repo_factory",
         [
             pytest.param(
-                lambda session, tenant_id: InvoiceRepository(session, tenant_id),
+                InvoiceRepository,
                 id="invoice_repo",
             ),
             pytest.param(
-                lambda session, tenant_id: VerifiedPaymentRepository(session, tenant_id),
+                VerifiedPaymentRepository,
                 id="verified_payment_repo",
             ),
         ],

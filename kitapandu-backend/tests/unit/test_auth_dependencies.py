@@ -28,6 +28,8 @@ from uuid import UUID, uuid4
 import pytest
 from fastapi import HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials
+from sqlalchemy.sql import operators
+from sqlalchemy.sql.elements import BinaryExpression, BindParameter, BooleanClauseList
 from starlette.requests import Request
 
 from ksma.identity.infrastructure.models import AccountRow, MembershipRow
@@ -778,8 +780,6 @@ async def _invoke_tenant_context(
 
 
 def _negated_predicates(clause: Any) -> list[Any]:
-    from sqlalchemy.sql import operators
-    from sqlalchemy.sql.elements import BinaryExpression, BooleanClauseList
 
     if clause is None:
         return []
@@ -795,7 +795,6 @@ def _negated_predicates(clause: Any) -> list[Any]:
 
 def _contradicts(row: Any, statement: Any) -> bool:
     """``True`` when the statement's WHERE excludes ``row``."""
-    from sqlalchemy.sql.elements import BindParameter
 
     for predicate in _negated_predicates(getattr(statement, "whereclause", None)):
         expected = predicate.right
@@ -887,7 +886,7 @@ class _FakeScalarsResult:
     def __init__(self, rows: list[Any]) -> None:
         self._rows = list(rows)
 
-    def scalars(self) -> "_FakeScalarsResult":
+    def scalars(self) -> _FakeScalarsResult:
         return self
 
     def all(self) -> list[Any]:
@@ -908,8 +907,6 @@ _MISSING = object()
 
 
 def _flat_predicates(clause: Any) -> list[Any]:
-    from sqlalchemy.sql import operators
-    from sqlalchemy.sql.elements import BinaryExpression, BooleanClauseList
 
     if clause is None:
         return []
@@ -923,8 +920,6 @@ def _flat_predicates(clause: Any) -> list[Any]:
 
 def _row_satisfies(row: Any, statement: Any) -> bool:
     """Real WHERE semantics: ``==`` and ``!=`` both filter the row set."""
-    from sqlalchemy.sql import operators
-    from sqlalchemy.sql.elements import BinaryExpression, BindParameter
 
     for predicate in _flat_predicates(getattr(statement, "whereclause", None)):
         if not isinstance(predicate, BinaryExpression):
@@ -953,7 +948,7 @@ class _GrantSession(_FakeSession):
     ``membership_id ==`` and ``status == 'active'`` genuinely bound the result.
     """
 
-    async def execute(self, *args: Any, **kwargs: Any) -> Any:  # noqa: D102
+    async def execute(self, *args: Any, **kwargs: Any) -> Any:
         self.executed.append((args, kwargs))
         statement = args[0] if args else None
         rows = list(self._scalars)
@@ -970,7 +965,6 @@ def _grant_row_dict(
     role_code: str = "AC",
     action_ids: list[str] | None = None,
 ) -> dict[str, Any]:
-    from datetime import UTC as _UTC
 
     return SimpleNamespace(
         id=uuid4(),
@@ -978,7 +972,7 @@ def _grant_row_dict(
         role_code=role_code,
         action_ids=action_ids if action_ids is not None else ["PLT-A01"],
         scope=scope if scope is not None else {},
-        valid_from=datetime(2020, 1, 1, tzinfo=_UTC),
+        valid_from=datetime(2020, 1, 1, tzinfo=UTC),
         valid_until=None,
         status=status,
         policy_id=uuid4(),

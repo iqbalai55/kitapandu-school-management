@@ -484,5 +484,5 @@ class TestUpdateFinancialScope:
         )
 
         assert session.params_of(0)["fs"] == (
-            '{"invoices": ["%s", "%s"]}' % (INVOICE_A, INVOICE_B)
+            f'{{"invoices": ["{INVOICE_A}", "{INVOICE_B}"]}}'
         )

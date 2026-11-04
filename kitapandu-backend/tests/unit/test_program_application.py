@@ -60,7 +60,6 @@ from ksma.shared.events import bus
 from ksma.shared.rbac import RoleCode
 from tests.unit.conftest_helpers import FakeAsyncSession, FakeTenantContext
 
-
 # ---------------------------------------------------------------------------
 # Dict-backed fake repositories (patched onto the application namespace)
 # ---------------------------------------------------------------------------

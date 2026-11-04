@@ -24,7 +24,8 @@ from uuid import UUID, uuid4
 
 import pytest
 from pydantic import SecretStr
-from sqlalchemy.sql import Select
+from sqlalchemy.sql import Select, operators
+from sqlalchemy.sql.elements import BinaryExpression, BindParameter, BooleanClauseList
 
 from ksma.identity.application import _hash_refresh
 from ksma.identity.domain import (
@@ -165,8 +166,6 @@ def _negated_predicates(clause: Any) -> list[Any]:
     survives. Honouring the negation closes that hole without disturbing the
     equality behaviour the other tests rely on.
     """
-    from sqlalchemy.sql import operators
-    from sqlalchemy.sql.elements import BinaryExpression, BooleanClauseList
 
     if clause is None:
         return []
@@ -182,7 +181,6 @@ def _negated_predicates(clause: Any) -> list[Any]:
 
 def _row_contradicts_clause(row: Any, statement: Any) -> bool:
     """``True`` when the statement's WHERE excludes ``row`` (a flipped ``==``)."""
-    from sqlalchemy.sql.elements import BindParameter
 
     whereclause = getattr(statement, "whereclause", None)
     for predicate in _negated_predicates(whereclause):
@@ -1070,9 +1068,17 @@ class TestWhereEqualitySurvivors:
         "caller,kwargs",
         [
             pytest.param("activate_account", {"account_id": "arg"}, id="activate_account"),
-            pytest.param("change_password", {"account_id": "arg", "new_password": "p"}, id="change_password"),
+            pytest.param(
+                "change_password",
+                {"account_id": "arg", "new_password": "p"},
+                id="change_password",
+            ),
             pytest.param("activate_membership", {"membership_id": "arg"}, id="activate_membership"),
-            pytest.param("revoke_membership", {"membership_id": "arg", "reason": "r"}, id="revoke_membership"),
+            pytest.param(
+                "revoke_membership",
+                {"membership_id": "arg", "reason": "r"},
+                id="revoke_membership",
+            ),
             pytest.param("revoke_access", {"assignment_id": "arg", "reason": "r"}, id="revoke_access"),
             pytest.param("issue_service_token", {"principal_code": "arg"}, id="issue_service_token"),
         ],
@@ -1168,7 +1174,7 @@ class TestTypedResultFields:
 
         session = _IdentitySession()
         aid = _seed_account(session, password="secret")
-        mid = _seed_membership(session, account_id=aid)
+        _seed_membership(session, account_id=aid)
         before = _clock().now()
         _access_token, access_refresh_raw, _exp, _a, _m = await login(
             session, auth_subject="alice", password="secret"
@@ -1235,7 +1241,7 @@ class TestTypedResultFields:
 
     async def test_complete_recovery_bumps_authz_revision(self) -> None:
         """Kills the ``1 -> 0`` mutant on line 602 (``a.authz_revision += 1``)."""
-        from ksma.identity.application import complete_recovery, _hash_refresh  # noqa: PLC0415
+        from ksma.identity.application import _hash_refresh, complete_recovery  # noqa: PLC0415
 
         session = _IdentitySession()
         aid = _seed_account(session, password="old")
