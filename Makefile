@@ -68,7 +68,7 @@ lint:                  ## ruff check the unit-test suite with full enforcement
 
 .PHONY: typecheck
 typecheck:             ## mypy the backend source tree
-	mypy $(CURDIR)/kitapandu-backend/src
+	cd $(CURDIR)/kitapandu-backend && mypy src
 
 .PHONY: test
 test:                  ## pytest unit + integration

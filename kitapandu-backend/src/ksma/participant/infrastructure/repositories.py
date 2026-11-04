@@ -454,7 +454,7 @@ def _to_participant(row: Any) -> Participant:
 def _to_related_party(row: Any) -> RelatedParty:
     return RelatedParty(
         id=row.id,
-        tenant_id=row.tenant_id if hasattr(row, "tenant_id") else None,
+        tenant_id=row.tenant_id,
         party_type=RelatedPartyType(row.party_type),
         display_name=row.display_name,
         contact=row.contact,
@@ -470,7 +470,7 @@ def _to_related_party(row: Any) -> RelatedParty:
 def _to_link(row: Any) -> ParticipantAccountLink:
     return ParticipantAccountLink(
         id=row.id,
-        tenant_id=row.tenant_id if hasattr(row, "tenant_id") else None,
+        tenant_id=row.tenant_id,
         account_id=row.account_id,
         participant_id=row.participant_id,
         related_party_id=row.related_party_id,
@@ -488,7 +488,7 @@ def _to_link(row: Any) -> ParticipantAccountLink:
 def _to_relation(row: Any) -> ParticipantRelation:
     return ParticipantRelation(
         id=row.id,
-        tenant_id=row.tenant_id if hasattr(row, "tenant_id") else None,
+        tenant_id=row.tenant_id,
         participant_id=row.participant_id,
         related_party_id=row.related_party_id,
         relation_kind=RelationKind(row.relation_kind),

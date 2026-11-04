@@ -22,6 +22,7 @@ from ksma.participant.domain import (
     ParticipantRelation,
     ParticipantStatus,
     RelatedParty,
+    RelatedPartyType,
     RelationKind,
     RelationStatus,
 )
@@ -235,7 +236,7 @@ async def create_related_party(
     repo = RelatedPartyRepository(session, ctx.tenant_id)
     rp = RelatedParty(
         tenant_id=ctx.tenant_id,
-        party_type=party_type,
+        party_type=RelatedPartyType(party_type),
         display_name=display_name,
         contact=contact,
         organization_ref=organization_ref,

@@ -220,7 +220,7 @@ def require_action(
     action: ActionCode,
     *,
     target_builder: Callable[[Request], Target] | None = None,
-):
+) -> Callable[..., Any]:
     """FastAPI dependency factory for RBAC.
 
     Returns a dependency that:

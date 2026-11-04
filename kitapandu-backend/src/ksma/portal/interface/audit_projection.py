@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from typing import Any
 from uuid import UUID
 
@@ -126,7 +127,7 @@ async def _project_event_to_inbox(
         )
 
 
-def _make_handler(event_type: str, notification_kind: str):
+def _make_handler(event_type: str, notification_kind: str) -> Callable[[DomainEvent], None]:
     """Build a sync bus handler that schedules an async projection task.
 
     The bus dispatches synchronously (``EventBus.dispatch`` is sync), so the

@@ -174,6 +174,7 @@ class BatchRepository:
                 {"tid": str(self.tenant_id), "bid": str(batch_id)},
             )
         ).first()
+        assert row is not None
         return int(row.n or 0)
 
 

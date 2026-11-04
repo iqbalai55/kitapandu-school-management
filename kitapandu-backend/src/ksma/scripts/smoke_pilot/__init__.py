@@ -41,7 +41,7 @@ import httpx
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from ksma.settings import get_settings
+from ksma.settings import Settings, get_settings
 
 
 import os
@@ -76,7 +76,7 @@ class SmokeRecorder:
 
 
 async def _lookup(
-    settings,
+    settings: Settings,
 ) -> dict[str, Any]:
     """Resolve all UUIDs we need by querying the DB directly.
 
@@ -97,6 +97,7 @@ async def _lookup(
                     )
                 )
             ).first()
+            assert tenant_row is not None
             tenant_id = UUID(str(tenant_row.id))
 
             # Bypass RLS for our IDs lookup so we read across schemas transparently.
@@ -132,6 +133,7 @@ async def _lookup(
                     {"tid": str(tenant_id)},
                 )
             ).first()
+            assert batch_row is not None
             batch_id = UUID(str(batch_row.id))
             batch_capacity = int(batch_row.capacity)
 
@@ -162,6 +164,7 @@ async def _lookup(
                     {"tid": str(tenant_id), "bid": str(batch_id)},
                 )
             ).first()
+            assert sess_row is not None
             session_id = UUID(str(sess_row.id))
 
             # Invoices.
@@ -174,6 +177,7 @@ async def _lookup(
                     {"tid": str(tenant_id)},
                 )
             ).first()
+            assert inv1_row is not None
             inv1_id = UUID(str(inv1_row.id))
             inv2_row = (
                 await conn.execute(
@@ -184,6 +188,7 @@ async def _lookup(
                     {"tid": str(tenant_id)},
                 )
             ).first()
+            assert inv2_row is not None
             inv2_id = UUID(str(inv2_row.id))
 
             # Verified payment for INV-VANETA-0001's installment-1.
@@ -217,6 +222,7 @@ async def _lookup(
                     {"tid": str(tenant_id)},
                 )
             ).first()
+            assert alloc_row is not None
             expected_allocation_amount = int(alloc_row.total or 0)
 
             return {
@@ -286,7 +292,7 @@ def _auth_headers(token: str) -> dict[str, str]:
 # ---- Steps -----------------------------------------------------------------
 
 
-async def step_01_login(rec: SmokeRecorder, settings) -> dict[str, Any] | None:
+async def step_01_login(rec: SmokeRecorder, settings: Settings) -> dict[str, Any] | None:
     """Step 1 + 2: log in as ``ac@vaneta.id`` (AC), check 200 + JWT carries
     one membership for Vaneta DEMO.
 

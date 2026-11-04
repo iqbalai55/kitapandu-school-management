@@ -60,6 +60,7 @@ async def submit_service_request(
             },
         )
     ).first()
+    assert r is not None
     event = ServiceRequestSubmitted(tenant_id=ctx.tenant_id, actor_id=ctx.account_id)
     await enqueue(session, event, aggregate_ref=f"service_request:{r.id}")
     bus().dispatch(event)

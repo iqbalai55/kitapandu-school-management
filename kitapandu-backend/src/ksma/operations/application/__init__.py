@@ -1182,6 +1182,10 @@ async def finish_operational_run(
 
 __all__ = [
     "MetricComputation",
+    "MetricTimeBasis",
+    "OperationalEnvironment",
+    "OperationalRunStatus",
+    "OperationKind",
     "UploadResult",
     "commit_import",
     "compute_metric",

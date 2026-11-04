@@ -188,6 +188,7 @@ class InvoiceRepository:
                 {"tid": str(self.tenant_id)},
             )
         ).first()
+        assert row is not None
         n = (row.n or 0) + 1
         return f"INV-{n:06d}"
 
@@ -206,6 +207,7 @@ class InvoiceRepository:
                 {"iid": str(invoice_id), "tid": str(self.tenant_id)},
             )
         ).first()
+        assert row is not None
         return int(row.total or 0)
 
 
@@ -447,6 +449,7 @@ class VerifiedPaymentRepository:
                 {"pid": str(payment_id), "tid": str(self.tenant_id)},
             )
         ).first()
+        assert row is not None
         return int(row.total or 0)
 
     async def bump_reversal_total(self, id: UUID, amount: int) -> None:
@@ -586,6 +589,7 @@ class ReceiptRepository:
                 {"tid": str(self.tenant_id)},
             )
         ).first()
+        assert row is not None
         n = (row.n or 0) + 1
         return f"RCP-{n:06d}"
 

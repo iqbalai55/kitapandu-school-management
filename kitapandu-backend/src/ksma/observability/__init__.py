@@ -39,7 +39,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from contextlib import nullcontext
+from contextlib import AbstractContextManager, nullcontext
 from typing import Any
 
 from fastapi import FastAPI
@@ -85,7 +85,9 @@ class _NoOpTracer:
     check.
     """
 
-    def start_as_current_span(self, name: str, *args: Any, **kwargs: Any):
+    def start_as_current_span(
+        self, name: str, *args: Any, **kwargs: Any
+    ) -> AbstractContextManager[_NoOpSpan]:
         # Return a context manager that yields a no-op span.
         return nullcontext(_NoOpSpan())
 
@@ -208,7 +210,7 @@ def setup_tracing(app: FastAPI, engine: AsyncEngine) -> None:
         logger.info("OTel SDK initialised", extra={"service": settings.otel_service_name})
 
 
-def _build_sampler(ratio: float):
+def _build_sampler(ratio: float) -> Any:
     """Map a 0..1 sample-ratio onto a TraceIdRatioBased sampler (clamped)."""
     from opentelemetry.sdk.trace.sampling import TraceIdRatioBased  # noqa: PLC0415 — lazy
 
@@ -219,7 +221,7 @@ def _build_sampler(ratio: float):
     return TraceIdRatioBased(ratio)
 
 
-def get_tracer(name: str):
+def get_tracer(name: str) -> Any:
     """Return a tracer.
 
     When OTel is enabled, this delegates to

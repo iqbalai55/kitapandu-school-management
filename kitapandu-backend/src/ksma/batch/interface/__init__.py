@@ -30,6 +30,7 @@ from ksma.batch.domain import (
     ApplicationStatus,
     AssignmentKind,
     BatchStatus,
+    DeliveryMode,
     EnrollmentStatus,
 )
 from ksma.batch.infrastructure.repositories import (
@@ -38,7 +39,6 @@ from ksma.batch.infrastructure.repositories import (
     EnrollmentRepository,
     TeachingAssignmentRepository,
 )
-from ksma.program.domain import DeliveryMode as _DeliveryMode
 from ksma.shared.persistence import session_scope
 from ksma.shared.tenancy import TenantContext
 from ksma.shared.auth.dependencies import tenant_context_dep as require_tenant_context
@@ -56,7 +56,7 @@ class CreateBatchBody(BaseModel):
     program_version_id: UUID
     period_id: UUID | None = None
     capacity: int = Field(ge=1)
-    delivery_mode: _DeliveryMode
+    delivery_mode: DeliveryMode
     service_from: date | None = None
     service_until: date | None = None
 
@@ -293,9 +293,11 @@ async def post_change_capacity(
         )
         repo = BatchRepository(session, ctx.tenant_id)
         b = await repo.get(batch_id)
-        active = await repo.count_active_enrollments(b.id)  # type: ignore[union-attr]
+        if b is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Batch not found")
+        active = await repo.count_active_enrollments(b.id)
         return BatchOut(
-            id=b.id,  # type: ignore[union-attr]
+            id=b.id,
             unit_id=b.unit_id,
             batch_code=b.batch_code,
             program_version_id=b.program_version_id,
