@@ -219,6 +219,7 @@ class ProgramVersionRepository:
                 {"pid": str(program_id), "tid": str(self.tenant_id)},
             )
         ).first()
+        assert row is not None
         return (row.n or 0) + 1
 
 
@@ -400,6 +401,7 @@ class RubricRepository:
                 {"pvid": str(program_version_id), "tid": str(self.tenant_id)},
             )
         ).first()
+        assert row is not None
         return (row.n or 0) + 1
 
     async def add_indicator(self, ind: RubricIndicator) -> None:

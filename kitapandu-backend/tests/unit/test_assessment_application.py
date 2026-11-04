@@ -40,9 +40,6 @@ import pytest
 from ksma.assessment.application import (
     create_assessment,
     decide_completion,
-    issue_certificate,
-    publish_report,
-    replace_certificate,
     review_assessment,
     revoke_certificate,
     revoke_report,
@@ -62,7 +59,7 @@ from ksma.program.domain import (
     RubricVersionStatus,
     Scale,
 )
-from ksma.reporting.domain import CertificateStatus, CompletionOutcome, ReportStatus
+from ksma.reporting.domain import CompletionOutcome
 from ksma.shared.errors import StateConflictError, ValidationError
 from ksma.shared.events import bus
 from ksma.shared.rbac import RoleCode

@@ -25,10 +25,12 @@ follow-up integration ticket).
 """
 from __future__ import annotations
 
+import hashlib
 import json
 from contextlib import asynccontextmanager
 from dataclasses import FrozenInstanceError
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
+from itertools import pairwise
 from types import SimpleNamespace
 from uuid import UUID, uuid4, uuid5
 
@@ -569,7 +571,7 @@ class TestEnsureParticipant:
         self, monkeypatch
     ) -> None:
         spy, session = self._run(monkeypatch, [None])
-        created = await _ensure_participant(
+        await _ensure_participant(
             session,
             tenant_id=uuid4(),
             participant_no="P-0001",
@@ -949,7 +951,7 @@ class TestSeedVanetaSessions:
         spies = await _run_seed_vaneta(monkeypatch)
         starts = [c.kwargs["starts_at"] for c in spies["session"].calls]
         gaps = [
-            (b - a).days for a, b in zip(starts, starts[1:])
+            (b - a).days for a, b in pairwise(starts)
         ]
         assert gaps == [7, 7]
 
@@ -958,7 +960,7 @@ class TestSeedVanetaSessions:
         self, monkeypatch
     ) -> None:
         spies = await _run_seed_vaneta(monkeypatch)
-        started = datetime.now(timezone.utc)
+        started = datetime.now(UTC)
         first = spies["session"].calls[0].kwargs["starts_at"]
         offset = first - started
         assert timedelta(days=7, hours=1) - timedelta(seconds=5) <= offset
@@ -1063,7 +1065,7 @@ class TestSeedVanetaInvoices:
         self, monkeypatch
     ) -> None:
         spies = await _run_seed_vaneta(monkeypatch)
-        today = datetime.now(timezone.utc).date()
+        today = datetime.now(UTC).date()
         for call in spies["invoice"].calls:
             for _seq, due_date, _amt in call.kwargs["installments"]:
                 assert abs((due_date - today).days) <= 1
@@ -1183,7 +1185,7 @@ class TestEnsureSessionRevision:
         )
         monkeypatch.setattr(seed, "add_revision", add_revision)
         session = _FakeSession([None])
-        starts = datetime(2026, 10, 27, 1, 0, tzinfo=timezone.utc)
+        starts = datetime(2026, 10, 27, 1, 0, tzinfo=UTC)
         returned = await _ensure_session(
             session,
             ctx=_ctx(),
@@ -1211,7 +1213,7 @@ class TestEnsureSessionRevision:
         session = _FakeSession(
             [SimpleNamespace(id=str(sid)), None]
         )
-        starts = datetime(2026, 10, 27, 1, 0, tzinfo=timezone.utc)
+        starts = datetime(2026, 10, 27, 1, 0, tzinfo=UTC)
         returned = await _ensure_session(
             session,
             ctx=_ctx(),
@@ -1235,7 +1237,7 @@ class TestEnsureSessionRevision:
         session = _FakeSession(
             [SimpleNamespace(id=str(sid)), SimpleNamespace(id=str(uuid4()))]
         )
-        starts = datetime(2026, 10, 27, 1, 0, tzinfo=timezone.utc)
+        starts = datetime(2026, 10, 27, 1, 0, tzinfo=UTC)
         returned = await _ensure_session(
             session,
             ctx=_ctx(),
@@ -1384,7 +1386,6 @@ class TestEnsureInvoiceAllocation:
         """The idempotency key is the SHA256 of the invoice number truncated
         to 32 hex chars, so a re-run reuses the same allocation.
         """
-        import hashlib
 
         invoice_id, installment_id = uuid4(), uuid4()
         allocate = _make_spy(
@@ -1465,7 +1466,7 @@ class TestMainRlsBypass:
         seeded: list[str] = []
         sp_id = uuid4()
 
-        async def _seed_one(spy_session, *, cfg, sp_id):  # noqa: ANN001
+        async def _seed_one(spy_session, *, cfg, sp_id):
             seeded.append(cfg.code)
             return {}
 
@@ -1473,7 +1474,7 @@ class TestMainRlsBypass:
         async def _scope():
             yield session
 
-        monkeypatch.setattr(seed, "session_scope", lambda: _scope())
+        monkeypatch.setattr(seed, "session_scope", _scope)
         monkeypatch.setattr(seed, "set_current_tenant", set_tenant)
         monkeypatch.setattr(
             seed, "_ensure_service_principal", _make_spy(lambda: sp_id)

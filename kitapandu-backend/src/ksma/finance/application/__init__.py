@@ -17,7 +17,7 @@ locks.
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Any
+from typing import Any, cast
 from uuid import UUID, uuid4
 
 from sqlalchemy import text
@@ -100,7 +100,7 @@ async def _require_published_finance_policy(
             "Finance flows require a published PolicyVersion with policy_domain='finance'",
             details={"decision": "Q04"},
         )
-    return row.id
+    return cast(UUID, row.id)
 
 
 # ---------------------------------------------------------------------------
@@ -461,6 +461,7 @@ async def allocate_funds(
             {"iid": str(installment_id), "tid": str(ctx.tenant_id)},
         )
     ).first()
+    assert inst_used is not None
     credit = (
         await session.execute(
             text(
@@ -474,6 +475,7 @@ async def allocate_funds(
             {"iid": str(installment_id), "tid": str(ctx.tenant_id)},
         )
     ).first()
+    assert credit is not None
     remainder = inst.due_amount - int(inst_used.total or 0) - int(credit.total or 0)
     if remainder < amount:
         raise InsufficientFundsError(
@@ -696,6 +698,7 @@ async def invoice_credit(
             {"iid": str(installment_id), "tid": str(ctx.tenant_id)},
         )
     ).first()
+    assert inst_used is not None
     credit = (
         await session.execute(
             text(
@@ -709,6 +712,7 @@ async def invoice_credit(
             {"iid": str(installment_id), "tid": str(ctx.tenant_id)},
         )
     ).first()
+    assert credit is not None
     remainder = inst.due_amount - int(inst_used.total or 0) - int(credit.total or 0)
     if amount > remainder:
         raise ValidationError(
@@ -765,12 +769,7 @@ async def compute_invoice_projection(
     for r in rows:
         effective = int(r.due_amount) - int(r.credited)
         remainder = effective - int(r.allocated)
-        due_status = (
-            InvoiceDocumentStatus.__class__  # placeholder
-            and (
-                "overdue" if r.due_date < today and remainder > 0 else "not_due"
-            )
-        )
+        due_status = "overdue" if r.due_date < today and remainder > 0 else "not_due"
         if due_status == "overdue":
             overdue_amount += remainder
         installments.append(

@@ -52,10 +52,10 @@ from ksma.participant.domain import (
     LinkStatus,
     Participant,
     ParticipantAccountLink,
+    ParticipantRelation,
     ParticipantStatus,
     RelationKind,
     RelationStatus,
-    ParticipantRelation,
 )
 from tests.unit.conftest_helpers import tenant_context
 

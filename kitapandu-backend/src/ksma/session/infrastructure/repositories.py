@@ -146,6 +146,7 @@ class SessionRepository:
                 {"bid": str(batch_id), "tid": str(self.tenant_id)},
             )
         ).first()
+        assert row is not None
         return (row.n or 0) + 1
 
 
@@ -210,6 +211,7 @@ class SessionRevisionRepository:
                 {"sid": str(session_id), "tid": str(self.tenant_id)},
             )
         ).first()
+        assert row is not None
         return (row.n or 0) + 1
 
 
@@ -494,6 +496,7 @@ class SessionCompletionRepository:
                 {"sid": str(session_id), "tid": str(self.tenant_id)},
             )
         ).first()
+        assert row is not None
         return (row.n or 0) + 1
 
 

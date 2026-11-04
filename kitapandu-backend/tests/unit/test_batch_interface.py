@@ -35,7 +35,7 @@ What is NOT asserted here (lives in the integration tier):
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, ClassVar
 from uuid import UUID, uuid4
 
 import pytest
@@ -76,8 +76,8 @@ class _FakeSession:
 
 
 class _FakeBatchRepository:
-    rows: list[Batch] = []
-    calls: list[dict[str, Any]] = []
+    rows: ClassVar[list[Batch]] = []
+    calls: ClassVar[list[dict[str, Any]]] = []
 
     def __init__(self, session: Any, tenant_id: UUID) -> None:
         self.session = session
@@ -92,8 +92,8 @@ class _FakeBatchRepository:
 
 
 class _FakeApplicationRepository:
-    rows: list[Application] = []
-    calls: list[dict[str, Any]] = []
+    rows: ClassVar[list[Application]] = []
+    calls: ClassVar[list[dict[str, Any]]] = []
 
     def __init__(self, session: Any, tenant_id: UUID) -> None:
         self.session = session
@@ -105,8 +105,8 @@ class _FakeApplicationRepository:
 
 
 class _FakeEnrollmentRepository:
-    rows: list[Enrollment] = []
-    calls: list[dict[str, Any]] = []
+    rows: ClassVar[list[Enrollment]] = []
+    calls: ClassVar[list[dict[str, Any]]] = []
 
     def __init__(self, session: Any, tenant_id: UUID) -> None:
         self.session = session
@@ -118,7 +118,7 @@ class _FakeEnrollmentRepository:
 
 
 class _FakeAssignTeacher:
-    calls: list[dict[str, Any]] = []
+    calls: ClassVar[list[dict[str, Any]]] = []
 
     async def __call__(self, session: Any, ctx: Any, **kwargs: Any) -> TeachingAssignment:
         self.calls.append(kwargs)

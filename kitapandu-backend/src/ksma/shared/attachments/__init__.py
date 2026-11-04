@@ -16,7 +16,7 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import BinaryIO
+from typing import Any, BinaryIO, cast
 
 
 @dataclass(frozen=True)
@@ -159,7 +159,7 @@ class S3AttachmentStorage(AttachmentStorage):
         self.secure = secure
         self._client: object | None = None
 
-    def _s3_client(self):  # pragma: no cover - requires MinIO/S3 at runtime
+    def _s3_client(self) -> Any:  # pragma: no cover - requires MinIO/S3 at runtime
         if self._client is None:
             try:
                 import boto3  # type: ignore
@@ -207,7 +207,7 @@ class S3AttachmentStorage(AttachmentStorage):
         resp = await loop.run_in_executor(
             None, lambda: client.get_object(Bucket=self.bucket, Key=key)
         )
-        return resp["Body"].read()
+        return cast(bytes, resp["Body"].read())
 
     async def delete(self, key: str) -> None:
         loop = asyncio.get_running_loop()

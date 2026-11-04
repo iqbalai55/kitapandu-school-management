@@ -1211,7 +1211,6 @@ class TestPreviewThenCommit:
 
 from ksma.operations import application as _app  # noqa: E402
 from ksma.operations.application import (  # noqa: E402
-    ALLOWED_MEDIA_TYPES,
     _safe_filename,
     _stub_content_check,
     compute_metric,
@@ -1225,7 +1224,6 @@ from ksma.operations.application import (  # noqa: E402
     start_operational_run,
 )
 from ksma.operations.domain import (  # noqa: E402
-    ExportJob,
     ExportStatus,
     MetricDefinition,
     MetricTimeBasis,
@@ -1235,7 +1233,6 @@ from ksma.operations.domain import (  # noqa: E402
     OperationKind,
 )
 from ksma.shared.attachments import LocalAttachmentStorage  # noqa: E402
-from ksma.shared.tenancy import TenantContext  # noqa: E402
 
 
 def _update_params(session: FakeAsyncSession, needle: str) -> list[dict[str, Any]]:
@@ -1455,7 +1452,7 @@ class TestReadAttachmentStream:
         ctx = _ctx(tenant_id=tenant_id)
         body = bytes(range(256)) * 1024 + b"tail"  # 256 KiB + 4 -> multi-chunk
         aid = await _seed_approved_attachment(session, tenant_id, body)
-        att, fetched = await read_attachment_bytes(session, ctx, attachment_id=aid)
+        _att, fetched = await read_attachment_bytes(session, ctx, attachment_id=aid)
         assert fetched == body
         chunks = [c async for c in read_attachment_stream(session, ctx, attachment_id=aid)]
         assert b"".join(chunks) == body

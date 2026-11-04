@@ -169,9 +169,9 @@ def dispose_engine() -> None:
         except RuntimeError:
             loop = None
         if loop and loop.is_running():
-            loop.create_task(_engine.aclose())
+            loop.create_task(_engine.dispose())
         else:
-            asyncio.run(_engine.aclose())
+            asyncio.run(_engine.dispose())
         _engine = None
         _sessionmaker = None
 

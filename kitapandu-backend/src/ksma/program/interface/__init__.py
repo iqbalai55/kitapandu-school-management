@@ -314,6 +314,10 @@ async def post_publish_program_version(
     async with session_scope() as session:
         await publish_program_version(session, ctx, version_id=version_id, make_current=make_current)
         v = await ProgramVersionRepository(session, ctx.tenant_id).get(version_id)
+        if v is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Program version not found"
+            )
         return ProgramVersionOut(
             id=v.id,
             program_id=v.program_id,

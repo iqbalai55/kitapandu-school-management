@@ -357,7 +357,7 @@ async def publish_report(
     event = ReportPublished(tenant_id=ctx.tenant_id, actor_id=ctx.account_id)
     await enqueue(session, event, aggregate_ref=f"report_publication:{publication_id}")
     bus().dispatch(event)
-    return pub  # type: ignore[return-value]
+    return pub
 
 
 async def supersede_report(

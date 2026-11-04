@@ -823,7 +823,7 @@ class TestObjectIdResolution:
         result_id = uuid4()
 
         @audited("INV-A02", object_kind="invoice", object_id_arg="invoice_id")
-        async def _service(session, ctx, *, invoice_id=None):  # noqa: ANN001, ARG001
+        async def _service(session, ctx, *, invoice_id=None):
             return _Result(id=result_id)
 
         returned = await _service(session, _ctx())
@@ -840,7 +840,7 @@ class TestObjectIdResolution:
         kwarg_id, result_id = uuid4(), uuid4()
 
         @audited("INV-A02", object_kind="invoice", object_id_arg="invoice_id")
-        async def _service(session, ctx, *, invoice_id=None):  # noqa: ANN001, ARG001
+        async def _service(session, ctx, *, invoice_id=None):
             return _Result(id=result_id)
 
         await _service(session, _ctx(), invoice_id=kwarg_id)
@@ -855,7 +855,7 @@ class TestObjectIdResolution:
         session = FakeAsyncSession()
 
         @audited("INV-A02", object_kind="invoice", object_id_arg="invoice_id")
-        async def _service(session, ctx, *, invoice_id=None):  # noqa: ANN001, ARG001
+        async def _service(session, ctx, *, invoice_id=None):
             return None
 
         await _service(session, _ctx())
@@ -872,7 +872,7 @@ class TestReasonRequirementBoundary:
         session = FakeAsyncSession()
 
         @audited("PAY-A01", reason_required=True)
-        async def _service(session, ctx, *, reason=None):  # noqa: ANN001, ARG001
+        async def _service(session, ctx, *, reason=None):
             return _Result(id=uuid4())
 
         with pytest.raises(ValidationError, match="reason is required"):
@@ -887,7 +887,7 @@ class TestReasonRequirementBoundary:
         result_id = uuid4()
 
         @audited("PAY-A01", reason_required=False)
-        async def _service(session, ctx, *, reason=None):  # noqa: ANN001, ARG001
+        async def _service(session, ctx, *, reason=None):
             return _Result(id=result_id)
 
         await _service(session, _ctx())

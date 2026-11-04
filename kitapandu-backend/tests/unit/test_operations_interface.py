@@ -16,7 +16,6 @@ the DB. No FastAPI app, no DB, no network.
 """
 from __future__ import annotations
 
-import io
 from contextlib import asynccontextmanager
 from typing import Any
 from uuid import uuid4
@@ -27,8 +26,8 @@ from fastapi import HTTPException
 from ksma.operations import interface as _iface
 from ksma.operations.application import MAX_ATTACHMENT_BYTES, UploadResult
 from ksma.operations.domain import AttachmentCheckStatus
-from tests.unit.conftest_helpers import FakeAsyncSession, FakeTenantContext
 from ksma.shared.rbac import RoleCode
+from tests.unit.conftest_helpers import FakeAsyncSession, FakeTenantContext
 
 
 class _FakeUploadFile:

@@ -16,7 +16,6 @@ No FastAPI app, no network; the middleware's own dispatch is covered by
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 import pytest
 

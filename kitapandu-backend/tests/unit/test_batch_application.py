@@ -32,8 +32,8 @@ What is NOT asserted here (lives in the integration tier):
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Any
+from datetime import UTC, datetime
+from typing import Any, ClassVar
 from uuid import UUID, uuid4
 
 import pytest
@@ -60,13 +60,14 @@ from ksma.shared.errors import (
     ValidationError,
 )
 
+
 class _PublishedVersion:
     """Minimal stand-in for a published ``ProgramVersion`` row."""
 
     status = ProgramVersionStatus.PUBLISHED
 
 
-UTC = timezone.utc
+
 NOW = datetime(2026, 10, 20, 12, 0, tzinfo=UTC)
 LATER = datetime(2026, 12, 1, 12, 0, tzinfo=UTC)
 
@@ -79,12 +80,12 @@ LATER = datetime(2026, 12, 1, 12, 0, tzinfo=UTC)
 class _FakeBatchRepository:
     """Stands in for ``BatchRepository``; records the V07 lock + V05 count."""
 
-    batches: dict[UUID, Batch] = {}
-    active_counts: dict[UUID, int] = {}
-    locks: list[UUID] = []
-    status_writes: list[tuple[UUID, BatchStatus, str]] = []
-    capacity_writes: list[tuple[UUID, int, str]] = []
-    list_calls: list[dict[str, Any]] = []
+    batches: ClassVar[dict[UUID, Batch]] = {}
+    active_counts: ClassVar[dict[UUID, int]] = {}
+    locks: ClassVar[list[UUID]] = []
+    status_writes: ClassVar[list[tuple[UUID, BatchStatus, str]]] = []
+    capacity_writes: ClassVar[list[tuple[UUID, int, str]]] = []
+    list_calls: ClassVar[list[dict[str, Any]]] = []
 
     def __init__(self, session: Any, tenant_id: UUID) -> None:
         self.session = session
@@ -119,10 +120,10 @@ class _FakeBatchRepository:
 
 
 class _FakeApplicationRepository:
-    applications: dict[UUID, Application] = {}
-    created: list[Application] = []
-    status_writes: list[tuple[UUID, ApplicationStatus, dict[str, Any] | None, str]] = []
-    list_calls: list[dict[str, Any]] = []
+    applications: ClassVar[dict[UUID, Application]] = {}
+    created: ClassVar[list[Application]] = []
+    status_writes: ClassVar[list[tuple[UUID, ApplicationStatus, dict[str, Any] | None, str]]] = []
+    list_calls: ClassVar[list[dict[str, Any]]] = []
 
     def __init__(self, session: Any, tenant_id: UUID) -> None:
         self.session = session
@@ -154,11 +155,11 @@ class _FakeApplicationRepository:
 
 
 class _FakeEnrollmentRepository:
-    enrollments: dict[UUID, Enrollment] = {}
-    created: list[Enrollment] = []
-    status_writes: list[tuple[UUID, EnrollmentStatus, Any, str]] = []
+    enrollments: ClassVar[dict[UUID, Enrollment]] = {}
+    created: ClassVar[list[Enrollment]] = []
+    status_writes: ClassVar[list[tuple[UUID, EnrollmentStatus, Any, str]]] = []
     create_error: BaseException | None = None
-    list_calls: list[dict[str, Any]] = []
+    list_calls: ClassVar[list[dict[str, Any]]] = []
 
     def __init__(self, session: Any, tenant_id: UUID) -> None:
         self.session = session
@@ -192,7 +193,7 @@ class _FakeEnrollmentRepository:
 
 
 class _FakeEnrollmentChangeRepository:
-    created: list[EnrollmentChange] = []
+    created: ClassVar[list[EnrollmentChange]] = []
 
     def __init__(self, session: Any, tenant_id: UUID) -> None:
         self.session = session
@@ -203,7 +204,7 @@ class _FakeEnrollmentChangeRepository:
 
 
 class _FakeTeachingAssignmentRepository:
-    created: list[TeachingAssignment] = []
+    created: ClassVar[list[TeachingAssignment]] = []
 
     def __init__(self, session: Any, tenant_id: UUID) -> None:
         self.session = session
@@ -214,7 +215,7 @@ class _FakeTeachingAssignmentRepository:
 
 
 class _FakeProgramVersionRepository:
-    versions: dict[UUID, Any] = {}
+    versions: ClassVar[dict[UUID, Any]] = {}
 
     def __init__(self, session: Any, tenant_id: UUID) -> None:
         self.session = session
@@ -846,7 +847,7 @@ async def test_transfer_enrollment_target_capacity_boundary(
 ) -> None:
     """REG-A08 / V05: the target batch is full at ``active == capacity`` (:516)."""
     src = _source(EnrollmentStatus.PLANNED)
-    target_id, target = _open_batch(capacity=capacity, status=BatchStatus.RUNNING)
+    target_id, _target = _open_batch(capacity=capacity, status=BatchStatus.RUNNING)
     _FakeBatchRepository.active_counts[target_id] = active
 
     coro = app.transfer_enrollment(

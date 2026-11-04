@@ -88,6 +88,7 @@ class ReportPublicationRepository:
                 {"eid": str(enrollment_id), "tid": str(self.tenant_id)},
             )
         ).first()
+        assert row is not None
         return int(row.n or 0) + 1
 
     async def update_status(self, id: UUID, *, status: ReportStatus, actor: str) -> None:
@@ -292,6 +293,7 @@ class CertificateRepository:
                 {"tid": str(self.tenant_id), "scope": scope},
             )
         ).first()
+        assert row is not None
         n = int(row.n or 0) + 1
         return f"CERT-{n:06d}"
 

@@ -25,7 +25,7 @@ help:                   ## Print this help (default goal)
 	@echo ""
 	@echo "Tests:"
 	@echo "  test               run unit + integration pytest"
-	@echo "  test-acceptance    run the V01..V24 PRD scenario pytest"
+	@echo "  test-acceptance    run the marked V-scenario acceptance tests"
 	@echo "  smoke              run the end-to-end smoke pilot script"
 	@echo ""
 	@echo "Harness:"
@@ -68,15 +68,15 @@ lint:                  ## ruff check the unit-test suite with full enforcement
 
 .PHONY: typecheck
 typecheck:             ## mypy the backend source tree
-	mypy $(CURDIR)/kitapandu-backend/src
+	cd $(CURDIR)/kitapandu-backend && mypy src
 
 .PHONY: test
 test:                  ## pytest unit + integration
 	cd $(CURDIR)/kitapandu-backend && pytest tests/unit tests/integration
 
 .PHONY: test-acceptance
-test-acceptance:       ## pytest V01..V24 PRD scenarios
-	cd $(CURDIR)/kitapandu-backend && pytest tests/e2e -m scenario
+test-acceptance:       ## run the marked V-scenario acceptance tests
+	cd $(CURDIR)/kitapandu-backend && pytest tests/integration -m scenario
 
 .PHONY: smoke
 smoke:                 ## run the smoke pilot script

@@ -288,7 +288,7 @@ async def post_tenant(body: TenantCreateBody) -> TenantOut:
         return TenantOut(
             id=t.id,
             display_name=t.display_name,
-            service_status=t.service_status.value,
+            service_status=t.service_status,
             default_timezone=t.default_timezone,
         )
 
@@ -321,7 +321,7 @@ async def post_education_unit(tenant_id: UUID, body: EducationUnitCreateBody) ->
             name=u.name,
             institution_type=u.institution_type,
             education_levels=u.education_levels,
-            status=u.status.value,
+            status=u.status,
             timezone=u.timezone,
         )
 
@@ -357,7 +357,7 @@ async def post_account(
             id=a.id,
             auth_subject=a.auth_subject,
             display_name=a.display_name,
-            status=a.status.value,
+            status=a.status,
             authz_revision=a.authz_revision,
         )
 
@@ -383,7 +383,7 @@ async def post_invite(
             id=m.id,
             tenant_id=m.tenant_id,
             account_id=m.account_id,
-            status=m.status.value,
+            status=m.status,
             valid_from=m.valid_from,
             valid_until=m.valid_until,
         )

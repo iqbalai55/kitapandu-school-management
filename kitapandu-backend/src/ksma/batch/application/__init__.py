@@ -180,9 +180,9 @@ async def change_batch_capacity(
         )
         bus().dispatch(event)
     await brepo.set_capacity(batch_id, capacity=new_capacity, actor=str(ctx.account_id))
-    event = BatchCapacityChanged(tenant_id=ctx.tenant_id, actor_id=ctx.account_id)
-    await enqueue(session, event, aggregate_ref=f"batch:{batch_id}")
-    bus().dispatch(event)
+    changed_event = BatchCapacityChanged(tenant_id=ctx.tenant_id, actor_id=ctx.account_id)
+    await enqueue(session, changed_event, aggregate_ref=f"batch:{batch_id}")
+    bus().dispatch(changed_event)
 
 
 # ---------------------------------------------------------------------------

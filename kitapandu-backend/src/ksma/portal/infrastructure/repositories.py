@@ -3,10 +3,10 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import text
+from sqlalchemy import CursorResult, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ksma.portal.domain import (
@@ -158,7 +158,7 @@ class InternalNotificationRepository:
                 "occurred": n.occurred_at or datetime.now(timezone.utc),
             },
         )
-        return result.rowcount > 0
+        return cast(CursorResult[Any], result).rowcount > 0
 
     async def write_or_ignore(
         self,
@@ -203,7 +203,7 @@ class InternalNotificationRepository:
                 "summary": summary,
             },
         )
-        return result.rowcount > 0
+        return cast(CursorResult[Any], result).rowcount > 0
 
     async def list_for_recipient(
         self, recipient_account_id: UUID, *, limit: int = 50

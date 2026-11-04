@@ -1892,7 +1892,6 @@ async def _run_async_main(*, failing_step=None, clock=None):
                 calls.append(n)
                 if n == failing_step:
                     rec.record(n, f"step {n}", False, "boom")
-            return None
 
         return _step
 
@@ -1906,7 +1905,7 @@ async def _run_async_main(*, failing_step=None, clock=None):
         ("step_09_audit", (9,)),
     ):
         patches.append(patch(f"ksma.scripts.smoke_pilot.{name}", side_effect=make_step(numbers)))
-    ctxs = [_use_mock_client(lambda req: _ok_json({"status": "ok"}))] + patches
+    ctxs = [_use_mock_client(lambda req: _ok_json({"status": "ok"})), *patches]
     if clock is not None:
         ctxs.append(patch.object(smoke_pilot_mod, "time", clock))
 

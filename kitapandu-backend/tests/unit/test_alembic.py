@@ -34,6 +34,7 @@ these kill the three surviving alembic mutants in the unit-test baseline:
 from __future__ import annotations
 
 import ast
+import importlib.util
 import re
 import sqlite3
 from pathlib import Path
@@ -192,8 +193,6 @@ def _run_migration(path: Path, func_name: str) -> RecordingOp:
     The module is imported in isolation and its ``op`` global is rebound to a
     recorder, so this exercises actual execution — not a re-parse of the AST.
     """
-    import importlib.util
-
     spec = importlib.util.spec_from_file_location(f"_t17_{path.stem}", path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)

@@ -163,9 +163,13 @@ class PortalParticipantOut(BaseModel):
 
 
 
-def require_action(action: ActionCode, target: Target = Target()):  # pragma: no cover
+def require_action(action: ActionCode, target: Target = Target()) -> Any:  # pragma: no cover
     """Provided by ``main.install_routes`` to evaluate RBAC before the handler."""
     raise NotImplementedError
+
+
+def _noop_dependency() -> None:
+    return None
 
 
 # --- Routes ------------------------------------------------------------------
@@ -175,7 +179,7 @@ def require_action(action: ActionCode, target: Target = Target()):  # pragma: no
 async def post_participants(
     body: CreateParticipantBody,
     ctx: TenantContext = Depends(require_tenant_context),
-    _=Depends(lambda: None),  # placeholder; replaced in main.py with require_action
+    _: Any = Depends(_noop_dependency),  # placeholder; replaced in main.py with require_action
 ) -> ParticipantOut:
     """REG-A02 Create profile (AC)."""
     raise NotImplementedError  # wired in main.py with require_action(REG_A02)

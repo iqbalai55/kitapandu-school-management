@@ -1253,6 +1253,7 @@ async def _ensure_application_for_participant(
             {"i": str(batch_id)},
         )
     ).first()
+    assert pv_row is not None
     program_id = (
         await session.execute(
             text("SELECT program_id FROM program_version WHERE id = :i"),

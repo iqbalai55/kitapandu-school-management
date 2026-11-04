@@ -166,7 +166,7 @@ async def cancel_session(
         )
     await srepo.set_lifecycle(session_id, SessionLifecycleStatus.CANCELLED, str(ctx.account_id))
     await srepo.set_effective_revision(
-        session_id, revision_id=s.effective_revision_id or uuid4(), reschedule_reason=f"CANCELLED: {reason}", actor=str(ctx.account_id)  # type: ignore[arg-type]
+        session_id, revision_id=s.effective_revision_id or uuid4(), reschedule_reason=f"CANCELLED: {reason}", actor=str(ctx.account_id)
     )
     event = SessionCancelled(tenant_id=ctx.tenant_id, actor_id=ctx.account_id)
     await enqueue(session, event, aggregate_ref=f"session:{session_id}")
@@ -466,7 +466,7 @@ async def record_substitute(
     if s is None:
         raise ValidationError("Session not found")
     tarepo = TeachingAssignmentRepository(session, ctx.tenant_id)
-    a = await tarepo.create(  # type: ignore[attr-defined]
+    await tarepo.create(
         # use the batch context's TeachingAssignment entity
         __import__("ksma.batch.domain", fromlist=["TeachingAssignment"]).TeachingAssignment(
             tenant_id=ctx.tenant_id,

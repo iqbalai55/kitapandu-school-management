@@ -11,8 +11,8 @@ from __future__ import annotations
 import functools
 import inspect
 import json
-from collections.abc import Callable as CallableABC
-from typing import Any, ParamSpec, TypeVar
+from collections.abc import Awaitable, Callable as CallableABC
+from typing import Any, ParamSpec, TypeVar, cast
 from uuid import UUID
 
 from sqlalchemy import text
@@ -93,7 +93,7 @@ def audited(
     object_id_arg: str | None = None,
     reason_required: bool = False,
     change_ref_arg: str | None = None,
-) -> CallableABC[[CallableABC[P, R]], CallableABC[P, R]]:
+) -> CallableABC[[CallableABC[P, Awaitable[R]]], CallableABC[P, Awaitable[R]]]:
     """Decorator: wrap a service-layer async function with audit + reason enforcement.
 
     The wrapped function must take ``session: AsyncSession`` as its first
@@ -112,7 +112,7 @@ def audited(
     the target object's id; defaults to the second-to-last positional arg of
     the return value's ``.id``.
     """
-    def decorator(fn: CallableABC[P, R]) -> CallableABC[P, R]:
+    def decorator(fn: CallableABC[P, Awaitable[R]]) -> CallableABC[P, Awaitable[R]]:
         sig = inspect.signature(fn)
         reason_arg = next(
             (n for n in ("reason", "correction_reason", "revocation_reason")
@@ -122,8 +122,12 @@ def audited(
 
         @functools.wraps(fn)
         async def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
-            session: AsyncSession = args[0]
-            ctx: TenantContext | None = args[1] if len(args) > 1 else kwargs.get("ctx")
+            session = cast(AsyncSession, args[0])
+            ctx = (
+                cast(TenantContext | None, args[1])
+                if len(args) > 1
+                else cast(TenantContext | None, kwargs.get("ctx"))
+            )
             if reason_required and reason_arg:
                 if not kwargs.get(reason_arg):
                     from ksma.shared.errors import ValidationError
@@ -143,10 +147,12 @@ def audited(
                 obj["id"] = str(target_id)
             change_ref: dict[str, Any] | None = None
             if change_ref_arg and change_ref_arg in kwargs:
-                change_ref = kwargs[change_ref_arg]
-                if not isinstance(change_ref, dict):
-                    change_ref = {"value": change_ref}
-            reason_value = kwargs.get(reason_arg) if reason_arg else None
+                raw_change_ref = kwargs[change_ref_arg]
+                if isinstance(raw_change_ref, dict):
+                    change_ref = cast(dict[str, Any], raw_change_ref)
+                else:
+                    change_ref = {"value": raw_change_ref}
+            reason_value = cast(str | None, kwargs.get(reason_arg)) if reason_arg else None
             await write_audit_record(
                 session,
                 action_id=action_id,
